@@ -1,7 +1,7 @@
 # BabyGut16S
 Code used for the analysis of 16S data from infant gut samples, published by Beller *et al*. (insert ref).
-## Input
-Input files include: 
+## Data
+Data files include: 
 - metadata file (metadata information per sample)
 - abundance file (read counts per ASV, per taxon, after preprocessing as described in the paper)
 - taxonomy file (per ASV, the taxonomic information)
