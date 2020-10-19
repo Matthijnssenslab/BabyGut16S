@@ -1,0 +1,2494 @@
+\documentclass{article}
+\usepackage[sc]{mathpazo}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\geometry{verbose,tmargin=2.5cm,bmargin=2.5cm,lmargin=2.5cm,rmargin=2.5cm}
+\setcounter{secnumdepth}{2}
+\setcounter{tocdepth}{2}
+\usepackage{url}
+\usepackage[unicode=true,pdfusetitle,
+ bookmarks=true,bookmarksnumbered=true,bookmarksopen=true,bookmarksopenlevel=2,
+ breaklinks=false,pdfborder={0 0 1},backref=false,colorlinks=false]
+ {hyperref}
+\hypersetup{
+ pdfstartview={XYZ null null 1}}
+\begin{document}
+\title{Infant Gut Microbiome: 16S}
+\author{LB}
+\maketitle
+This document is an overview of the analyses on the BaBel infant dataset in R. 
+\subsection*{Set up}
+<< Set working directory,  message=F>>=
+Workdir=
+"/Users/Leentje/Documents/Phd/Publications/LB/2_Bacteriome_LETTER/Github/BabyGut/BabyGut16S/"
+@
+First, we wil start with loading all packages needed in this script.
+<<load libraries, warning=F, message=F>>=
+# if  you need to install them: 'install.packages('x')'
+library(ggplot2)
+library(dplyr)
+library(plyr)
+library(reshape)
+library(reshape2)
+library(scales)
+library(dunn.test)
+library(readr)
+library(stringr)
+library(phyloseq)
+library(vegan)
+library(tidyr)
+library(data.table)
+library(Maaslin2)
+library(plotly)
+library(synchrony)
+library(rlist)
+library(DirichletMultinomial)
+library(ggpubr)
+library(RColorBrewer)
+library(jcolors)
+
+@
+Using one command we can check which versions of the packages are installed:
+<<Check versions of all packages,  message=F>>=
+sessionInfo()
+@
+We define the colors that will be used and a theme in advance
+<<Make some color functions, fig.width=3, fig.height=3, message=F >>=
+PAL_LB <- c('#DFE07C','#7F8E39','#3F4521','#42858C','#205062',
+            '#1D3554','#513D30','#70513A','#AF8A5F')
+show_col(PAL_LB)
+
+PAL_LB_5 <- c('#513D30','#70513A','#AF8A5F','#42858C','#205062','#1D3554')
+
+scale_fill_LB <- function(number_of_colors){
+  structure(list(
+scale_fill_manual(values = get_palette(palette = PAL_LB ,k=number_of_colors))   
+))
+}
+
+scale_color_LB <- function(number_of_colors){
+  structure(list(
+scale_color_manual(values = get_palette(palette = PAL_LB ,k=number_of_colors))   
+))
+}
+### for the gradient define a light and dark color:
+lightcol="#DFE07C" # licht geel
+darkcol="#1D3554" # donker blauw
+scale_color_gradientn_LB <-function(){
+  structure(list(
+scale_color_gradientn(colours = c(lightcol,darkcol))))
+}
+
+scale_fill_gradientn_LB <-function(){
+  structure(list(
+scale_fill_gradientn(colours = c(lightcol,darkcol))))
+}
+
+# per infant
+colors_LB <- colorRampPalette(c("orange", "darkmagenta", "turquoise"))(9)[1:8]
+
+show_col(colors_LB)
+
+scale_fill_LB_infants <- function(number_of_colors){
+  structure(list(
+    scale_fill_manual(values=colors_LB)
+  ))
+}
+scale_color_LB_infants <- function(number_of_colors){
+  structure(list(
+    scale_color_manual(values=colors_LB)
+  ))
+}
+theme_LB <- function () { 
+    theme_light() 
+}
+@
+<< LB Theme,  message=F>>=
+
+theme_LB <- function () { 
+    theme_light() +     
+    theme(text = element_text(size = 12, family =  "Helvetica"), 
+        title = element_text(hjust = 0.5), 
+        axis.title.x = element_text(hjust = 0.5), 
+        axis.title.y = element_text(hjust = 0.5), 
+        panel.grid.major.y = element_line(colour = "#D8D8D8"), 
+        panel.grid.minor.y = element_blank(),
+        plot.title = element_text(face = "bold"),
+        panel.grid.minor.x = element_blank(), 
+        panel.border = element_blank(), 
+        panel.background = element_blank(), 
+        legend.position = "right", 
+        legend.key = element_rect(fill = "#FFFFFF00"))
+}
+
+
+@
+Figures created will be saved under following folders:
+<< make folders to save,  message=F>>=
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"), sep=""))
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                 "/Figure1", sep=""))
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                 "/Figure2", sep=""))
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                 "/Figure3", sep=""))
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                 "/Figure4", sep=""))
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                 "/Supplementary", sep=""))
+@
+\subsection*{Load the data}
+First we load the files created in the preprocessing steps as described in the paper (ref -> Beller et al. ) and we will create a phyloseq object.
+<<We load the data files, message=F>>=
+BabyGut16S_metadata <- read.csv(paste(Workdir, "/Data/BabyGut16S_metadata.csv",sep=""), 
+                                row.names=1)
+BabyGut16S_metadata$Consistency[BabyGut16S_metadata$Consistency == 1] <- "Aqueous"
+BabyGut16S_metadata$Consistency[BabyGut16S_metadata$Consistency == 2] <- "Soft"
+BabyGut16S_metadata$Consistency[BabyGut16S_metadata$Consistency == 3] <- "Solid"
+BabyGut16S_metadata$ATC_level2[BabyGut16S_metadata$Sample.ID == "S004-116"] <- "J01"
+BabyGut16S_metadata$ATC_level2_J01[BabyGut16S_metadata$Sample.ID == "S004-116"] <- "Y"
+BabyGut16S_otu <-  read.csv(paste(Workdir, "/Data/BabyGut16S_otu.csv",sep=""), 
+                            row.names=1)
+BabyGut16S_tax <-  read.csv(paste(Workdir, "/Data/BabyGut16S_tax.csv",sep=""), 
+                            row.names=1)
+
+BabyGut16S_ps <- phyloseq(otu_table(BabyGut16S_otu, taxa_are_rows=F), 
+                          sample_data(BabyGut16S_metadata), 
+                          tax_table(as.matrix(BabyGut16S_tax)))
+BabyGut16S_ps_abundance <- transform_sample_counts(BabyGut16S_ps, 
+                                                   function(OTU) OTU/sum(OTU))
+
+Infants <- unique(BabyGut16S_metadata$InfantID)
+LDA_Samples <- BabyGut16S_metadata$Sample.ID[BabyGut16S_metadata$LDA == 1]
+Samples <- BabyGut16S_metadata$Sample.ID
+@
+The phyloseq object should contain:
+\begin{itemize}
+  \item 197 ASVs
+  \item 303 Samples
+  \item 7 taxonomic ranks
+  \item 49 Metadata Variables
+  \end{itemize}
+\subsection*{Figure 1}
+\subsubsection*{Part1: the gut  microbiota  maturation  stages}
+First of all, we will perform a DMM clustering on all the samples (n=303) at genus level, to find clustering of the samples.
+<< DMM clustering to define enterostages and get statistics: find optimal model, message=F>>= 
+TABLE  <- tax_glom(BabyGut16S_ps, taxrank="Genus") # run on Genus abundance table
+maxnumberofclusters <- 10 # number of clusters to test in every iteration
+#  create table to save output
+DMM_out <- as.data.frame(cbind(cbind(cbind(cbind(
+                                        1:maxnumberofclusters,
+                                          1:maxnumberofclusters),
+                                           1:maxnumberofclusters),
+                                            1:maxnumberofclusters),
+                                             1:maxnumberofclusters)) 
+colnames(DMM_out) <- c('NumberOfClusters','NLE','Laplace','BIC','AIC')
+set.seed(1)
+# take 20 random numbers that we will set as seeds to perform the DMM clustering:
+seeds <- round(runif(20, 0, .Machine$integer.max))
+list_seeds <- list()
+for (seed in 1:length(seeds)){
+print(paste('seed: ',seeds[seed]))
+set.seed(1)
+# run the DMM clustering for the different number of clusters (1:10),
+# on the genus abundance table for the specific seed:
+fit <- mclapply(1:maxnumberofclusters, dmn, 
+                count = otu_table(TABLE), verbose=TRUE, 
+                seed = seeds[seed]) 
+# merge output to table format
+list_seeds[[seed]]  <-  melt(t(as.data.frame(sapply(fit, goodnessOfFit)))) 
+} # this can take some time...
+
+DMM_out_m <- list.rbind(list_seeds)
+colnames(DMM_out_m) <- c("NumberOfClusters","variable","value")
+DMM_out_m$NumberOfClusters <- gsub("V","",DMM_out_m$NumberOfClusters)
+DMM_out_m$NumberOfClusters <- as.numeric(DMM_out_m$NumberOfClusters)
+
+DMM_out_m$seed <- sort(rep(seeds, maxnumberofclusters*5))
+
+optimizer <- c('BIC')
+# You can compare the results for more optimizers (Laplace, AIC, ..), 
+# for our data BIC is the most robust 
+DMM_out_m_minima <- as.data.frame(cbind(seeds,seeds)) 
+# check per seed where the minimum is reached
+colnames(DMM_out_m_minima) <- c('seed','NumberOfClusters')
+for (seed in seeds){
+subset <-  DMM_out_m[DMM_out_m$seed == seed & DMM_out_m$variable == optimizer,]  
+DMM_out_m_minima$NumberOfClusters[DMM_out_m_minima$seed == seed] <- 
+  subset$NumberOfClusters[subset$value == min(subset$value)]
+}
+
+P <- ggplot(DMM_out_m_minima, aes(x= NumberOfClusters))+
+  geom_histogram()+
+  theme_LB()
+
+pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Supplementary/",
+          "OptimisationBIC_numberofclusters_Setseed_1.pdf", sep="")) 
+print(P)
+dev.off()  
+ 
+ # select best seed:
+xx <- DMM_out_m[DMM_out_m$NumberOfClusters == 
+                  names(which.max(table(DMM_out_m_minima$NumberOfClusters))) & 
+            DMM_out_m$variable ==  optimizer & 
+            DMM_out_m$seed %in% DMM_out_m_minima$seed[
+            DMM_out_m_minima$NumberOfClusters ==
+              names(which.max(table( DMM_out_m_minima$NumberOfClusters)))],]
+BestSeed <- xx$seed[xx$value == min(xx$value)]
+# select number of clusters determined at this seed:
+BestSeed_nclusers <- xx$NumberOfClusters[xx$seed == BestSeed] 
+PP <- ggplot(DMM_out_m[DMM_out_m$variable == optimizer & DMM_out_m$seed ==  BestSeed, ], 
+             aes(x=NumberOfClusters, y=value)) +
+  geom_point()+
+  geom_path()+
+  theme_LB()+
+    scale_x_continuous(breaks = c(1:10))+
+  xlab("Number of Dirichlet Components")+
+  ylab(paste("Model fit (Bayesian Information Criterion, ",optimizer,")", sep=""))
+
+pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Supplementary/",
+          "OptimisationBIC_modelfit_Setseed_1.pdf", sep="")) 
+print(PP)
+dev.off()  
+
+# the model with the optimal fit has:
+# number of clusters:
+print(BestSeed_nclusers)
+# at seed:
+print(BestSeed)
+@
+Statistics on the model fit.
+<< statistics on the optimal model fit, warning=F, message=F>>=
+# take the best found fit
+fit_optimal <- dmn(otu_table(TABLE), BestSeed_nclusers , verbose = F , seed = BestSeed) 
+sample_data(TABLE)$Cluster <- as.character(mixture(fit_optimal, assign=TRUE))
+nc <- length(unique(sample_data(TABLE)$Cluster))
+time_cluster <- as.data.frame(cbind(1:nc, 1:nc))
+colnames(time_cluster) <- c('Time','Cluster')
+## reorder the found clusters based on time
+sample_data(TABLE)$InfantID <- as.character(sample_data(TABLE)$InfantID)
+for (i in 1:nc){
+time_cluster$Time[time_cluster$Cluster == i] <- 
+  min(sample_data(TABLE)$X.days[sample_data(TABLE)$Cluster == i 
+  & !sample_data(TABLE)$InfantID == "S011"]) 
+#! Don't take into account the timing of the cluster unique for S011
+}
+time_cluster$Time[time_cluster$Time == Inf] <- 350
+time_cluster <- time_cluster[order(time_cluster$Time),]
+time_cluster$Cluster_new <- LETTERS[1:nc] # convert numbers into letters
+for (i in 1:nc){
+sample_data(TABLE)$Cluster[sample_data(TABLE)$Cluster == i] <-
+  time_cluster$Cluster_new[ time_cluster$Cluster == i]
+}
+
+Stats <- mixturewt(fit_optimal)
+# weight=pi and homogeneity is theta (how larger theta how more homogeneous)
+
+for (c in rownames(Stats)){Stats$Cluster[rownames(Stats) == c] <- 
+  time_cluster$Cluster_new[time_cluster$Cluster == c] }
+
+numberper <- as.data.frame(table(sample_data(TABLE)$Cluster))
+colnames(numberper) <- c("Cluster","NumberOfSamples")
+Stats <- merge(Stats, numberper)
+write.csv(x = Stats, file=paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                                "/Supplementary/",
+                                "OptimisationBIC_statistics_percluster.csv", sep=""))
+Assignements_probability <- as.data.frame(cbind(mixture(fit_optimal), 
+                                                mixture(fit_optimal, assign=TRUE)))
+colnames(Assignements_probability) <- c(1:nc,'selection')
+Stats_persample <- merge(Assignements_probability,
+                         as.data.frame(sample_data(TABLE)[,c('Sample.ID','Cluster')]), 
+                         by=0)
+rownames(Stats_persample) <- Stats_persample$Row.names
+Stats_persample$Row.names <- NULL
+for (r in 1:nrow(Stats_persample)){
+Stats_persample$Probability_selection[r] <- Stats_persample[r,
+                                            colnames(Stats_persample) == Stats_persample$selection[r]]  
+}
+write.csv(x = Stats_persample, file=paste(Workdir,"Output_",
+                                          format(Sys.time(), "%Y-%m-%d"),
+                                          "/Supplementary/"
+                                          ,"OptimisationBIC_statistics_persample.csv",
+                                          sep=""))
+Clusters <- Stats_persample[,c("Sample.ID","Cluster")]
+# find clusters that represent a change compared to previous timepoint: 
+baby_list <- list()
+for (b in 1:8){
+baby <- Infants[b]
+Clusters_b <- Clusters[grepl(baby, Clusters$Sample.ID),] %>% mutate_all(as.character())
+Clusters_b$change <- c("No")
+Clusters_b$change_stepback <- c("No")
+Clusters_b$Order <- as.numeric(gsub(".*-","",Clusters_b$Sample.ID))
+Clusters_b <- Clusters_b[order(Clusters_b$Order),]
+for (r in 2:nrow(Clusters_b)){
+  if (Clusters_b$Cluster[r] == Clusters_b$Cluster[r-1] ){
+    Clusters_b$change[r] <- "No" 
+     Clusters_b$change_stepback[r] <- "No"
+    }else{
+      Clusters_b$change[r] <- "Yes" 
+      if (which(LETTERS == Clusters_b$Cluster[r]) < 
+          which(LETTERS == Clusters_b$Cluster[r-1]) ){
+        Clusters_b$change_stepback[r] <- "Yes"
+        }
+      }
+}
+ Clusters_b$change_2 <- c("No")
+for (r in 3:nrow(Clusters_b)){
+  if (Clusters_b$Cluster[r] == Clusters_b$Cluster[r-1] ){
+    Clusters_b$change_2[r] <- "No" 
+    }else if(Clusters_b$Cluster[r-1] == Clusters_b$Cluster[r-2]){
+      Clusters_b$change_2[r] <- "Yes" 
+      # it's not a change after 2 samples in that cluster 
+      }
+  else{
+          Clusters_b$change_2[r] <- "No_nodrasticchange" 
+  }}
+
+baby_list[[b]] <- Clusters_b[Clusters_b$change == "Yes",]
+}
+
+Enterostagechange <- as.data.frame(rbindlist(baby_list))
+Enterostagechange$change_stepback[
+  Enterostagechange$Sample.ID == "S011-93"] <- "No" 
+# is a step further in time from C to D
+@
+Define color vector for the identified clusters.
+<< Define a color vector for every cluster, message=F>>=
+test <- sample_data(TABLE)[,c('X.days','InfantID','Cluster','Sample.ID')]
+COLORS <- as.data.frame(cbind(unique(sort(test$Cluster)), unique(sort(test$Cluster))))
+colnames(COLORS) <- c('Cluster','Color')
+COLORS$Color <-   get_palette(palette = PAL_LB, k = 8)[1:nrow(COLORS)] 
+@
+Figure 1a: Overview of the enterostage succession of the samples of all the infants over time. We will colour the timepoints according to the assigned enterostages determined using the DMM approach (calculated on all samples (n=303)), but first we will only show the samples at predefined time points where the infants were not sick (n=142)) 
+<< Fig 1a, fig.width=12, fig.height=  3 , message=F>>=
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                 "/Figure1/",
+                 "Figure1a", sep=""))
+test_all <-  test
+PLOT <- ggplot(test[test$Sample.ID %in% LDA_Samples ,], 
+               aes(x=X.days, y=Cluster, color=Cluster, group=1)) + 
+  geom_point(size = 4)+
+  scale_color_manual(values= as.character(COLORS$Color))  +
+  facet_wrap(~InfantID, nrow = 1)+
+  geom_line(color= 'grey')+
+  theme_LB() +
+  ggtitle(paste("LDA samples, 
+  BIC: # clusters = ", BestSeed_nclusers , ", seed =",BestSeed))+
+  scale_y_discrete(expand=c(0.3, 0))+
+  xlab('Days after birth')
+
+pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+          "/Figure1/Figure1a/",
+          "Fig1a.pdf", sep=""), width = 12, height=3) 
+print(PLOT)
+dev.off()  
+PLOT
+@
+Statistics to confirm temporal ranking of the clusters is significant
+<<Fig1a: statistics>>=
+kendalltable <- as.data.frame(matrix(nrow = 8, ncol=4))
+colnames(kendalltable) <- unique(test$Cluster)
+rownames(kendalltable) <- unique(test$InfantID)
+test <- test[order(test$X.days),]
+for (cl in unique(test$Cluster)){
+  for (infant in Infants){
+kendalltable[infant, cl] <- test$X.days[test$Sample.ID %in% LDA_Samples & 
+                                        test$InfantID == infant & 
+                                          test$Cluster == cl][1]
+}}
+
+
+KENDALOUTCOME <- kendall.w(t(kendalltable), 
+                           nrands = 10000, type = 1, quiet = T)
+KENDALOUTCOME_table <- as.data.frame(matrix(nrow = 4, ncol=2))
+KENDALOUTCOME_table[,1] <- c("Kendall's W (uncorrected for ties)",
+                             "Kendall's W (corrected for ties)",
+                             "Spearman's ranked correlation",
+                             "Kendall's W p-value (one-tailed test [greater])")
+KENDALOUTCOME_table[,2] <- c(KENDALOUTCOME$w.uncorrected, KENDALOUTCOME$w.corrected, 
+                             KENDALOUTCOME$spearman.corr, KENDALOUTCOME$pval.rand)
+colnames(KENDALOUTCOME_table) <- c('Kendall test, all infants','value')
+write.csv(KENDALOUTCOME_table, file = paste(Workdir,"Output_",
+                                      format(Sys.time(), "%Y-%m-%d"),
+                                      "/Figure1/Figure1a/",
+                                      "Fig1a_kendalltest.csv", sep=""))
+
+kendalltable_noS011 <- kendalltable[!rownames(kendalltable) == "S011", ]
+KENDALOUTCOME_noS011 <- kendall.w(t(kendalltable_noS011), nrands = 10000, 
+                                  type = 1, quiet = T)
+KENDALOUTCOME_noS011_table <- as.data.frame(matrix(nrow = 4, ncol=2))
+KENDALOUTCOME_noS011_table[,1] <- c("Kendall's W (uncorrected for ties)",
+                                    "Kendall's W (corrected for ties)",
+                                    "Spearman's ranked correlation",
+                                    "Kendall's W p-value (one-tailed test [greater])")
+
+KENDALOUTCOME_noS011_table[,2] <- c(KENDALOUTCOME_noS011$w.uncorrected, 
+                                    KENDALOUTCOME_noS011$w.corrected, 
+                                    KENDALOUTCOME_noS011$spearman.corr, 
+                                    KENDALOUTCOME_noS011$pval.rand)
+colnames(KENDALOUTCOME_noS011_table) <- c('Kendall test, all infants not including S011',
+                                          'value')
+write.csv(KENDALOUTCOME_noS011_table, 
+          file = paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                               "/Figure1/Figure1a/","Fig1a_kendalltest_exclS011.csv", 
+                               sep=""))
+@
+Figure 1b: Variation in timing of transition between the enterostages in the different infants 
+<< Fig 1b, fig.width=3, fig.height=  4 , message=F>>= 
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure1/",
+                 "Figure1b", sep=""))
+
+TransitionsAtoBtoC <- Enterostagechange[!grepl('S011', Enterostagechange$Sample.ID) &
+                                          !Enterostagechange$Cluster == "A",]
+# A to B:
+AtoB <- TransitionsAtoBtoC[TransitionsAtoBtoC$Cluster == "B" & 
+                             TransitionsAtoBtoC$change_2 == "Yes",]
+for (i in Infants){
+if(length(AtoB$Sample.ID[grepl(i, AtoB$Sample.ID)]) > 1){
+  AtoB <- AtoB[!AtoB$Sample.ID %in% AtoB$Sample.ID[grepl(i, AtoB$Sample.ID)][-1], ]  
+}}
+# B to C:
+BtoC <- TransitionsAtoBtoC[TransitionsAtoBtoC$Cluster == "C" ,]
+for (i in Infants){
+if(length(BtoC$Sample.ID[grepl(i, BtoC$Sample.ID)]) > 1){
+  BtoC <- BtoC[!BtoC$Sample.ID %in% BtoC$Sample.ID[grepl(i, BtoC$Sample.ID)][-1], ]  
+}}
+Infants <- as.character(Infants)
+Transitions <- as.data.frame(cbind(cbind(Infants[!Infants == 'S011'],
+                                    Infants[!Infants == 'S011']),
+                                   Infants[!Infants == 'S011'])) %>% mutate_all(as.character)
+colnames(Transitions) <- c('InfantID','AtoB','BtoC')
+
+for (t in c('AtoB','BtoC')){
+for (i in Infants[!Infants == 'S011']){  
+  Transitions[Transitions$InfantID == i,colnames(Transitions) == t] <- 
+    BabyGut16S_metadata$X.days[
+    BabyGut16S_metadata$Sample.ID == get(t)$Sample.ID[grepl(i,get(t)$Sample.ID)]]
+}}
+Transitions_m <- melt(Transitions, id.vars = 'InfantID')
+plot <- ggplot(Transitions_m, aes(x=variable, y=as.numeric(value)))+
+geom_boxplot()+
+  geom_point(aes(color=InfantID), size=3)+
+ # coord_flip()+
+  scale_color_LB(8)  +
+  theme_LB()+
+  labs(x="Transition Between Enterostages", y="Days After Birth")
+pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure1/Figure1b/",
+          "Fig1b_Setseed_1.pdf", sep=""), width = 3, height=4) 
+print(plot)
+dev.off()
+plot
+@
+Figure 1c: Alpha diversity measures (observed ASV richness and Shannon diversity) of the samples within every enterostage.
+<< Fig 1c, fig.width=5, fig.height=  4  , message=F>>=
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure1/",
+                 "Figure1c", sep=""))
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure1/",
+                 "Figure1c/Statistics", sep=""))
+Alpha_percluster <- plot_richness(TABLE, x="Cluster", color="Cluster" ,nrow =1, 
+                                  measures = c("Observed", "Shannon"))+
+geom_boxplot()+
+  scale_color_manual(values= as.character(COLORS$Color))  +
+  ggtitle("Alpha Diversity") + 
+  theme_LB()
+Alpha_percluster
+pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure1/Figure1c/",
+          "Fig1c_Setseed_1.pdf", sep=""), width = 5, height=4) 
+print(Alpha_percluster)
+dev.off()   
+@
+<< Fig 1c: statistics, message=F >>=
+alpha <- estimate_richness(TABLE, measures = c("Observed", "Shannon"))
+alpha$Sample <- rownames(alpha)
+for (cl in unique(test$Cluster)){
+alpha$Cluster[rownames(alpha) %in% rownames(test[test$Cluster == cl,])] <- cl
+}
+for (m in c("Observed", "Shannon")){
+K <-   kruskal.test(alpha[,colnames(alpha) == m] ~ as.factor(alpha$Cluster ))
+print(paste(m, ': p-value kruskal test ', K$p.value))
+pval <- K$p.value
+chisquared <- as.character(K$statistic)
+kruskallresult <- c(m,chisquared,pval)
+kruskallresult <- rbind(kruskallresult, c('','',''))
+
+colnames(kruskallresult) <- c("Alpha measurement","chi-squared","p-value") 
+
+write.csv(kruskallresult, paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                                "/Figure1/Figure1c/Statistics/",
+                                "Fig1c_statistics_Kruskall",m,".csv", sep=""))
+
+#### p-adjustement? p.adjust(K$p.value, method = "BH")
+invisible({capture.output({
+
+D <- as.data.frame(dunn.test(alpha[,colnames(alpha) == m] ,as.factor(alpha$Cluster),
+                             method='bh'))
+})})
+colnames(D) <- c('chi2','Z','P','P.adj','Comparison')
+
+  # calculate effect size:
+e <- 'Cluster'
+freq <- as.data.frame(table(unique(alpha[,c('Sample',e)])[,e]))
+for (c in D$Comparison){
+N1 <- freq$Freq[freq$Var1 == word(c,1)] #
+N2 <- freq$Freq[freq$Var1 == word(c,3)]
+D$N[D$Comparison == c]  <- sum(N1,N2)
+} #where N is the sum of the samples in the two groups compared
+D$r <-  D$Z/sqrt(D$N)
+D$r2 <- D$r^2
+write.csv(D, paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                   "/Figure1/Figure1c/Statistics/",
+                   "Fig1c_statistics_Dunn_BH_",m,".csv", sep=""))
+
+   }
+
+
+@
+Figrue 1d: Mean relative abundance of the most common genera at every enterostage
+<< Fig 1d, fig.width=4.5, fig.height=  4 , message=F>>=
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                 "/Figure1/","Figure1d", sep=""))
+
+TABLE_abundance <- transform_sample_counts(TABLE, function(OTU) OTU/sum(OTU))
+TABLE_abundance_ <- psmelt(TABLE_abundance)
+TABLE_abundance_ <- TABLE_abundance_[, c('Abundance','Sample.ID','Genus','Cluster')]
+TABLE_abundance_average <- aggregate(Abundance~Cluster+Genus,TABLE_abundance_,mean)
+genplot <- as.data.frame(aggregate(Abundance~Genus,TABLE_abundance_,mean))
+genplot_ <- genplot$Genus[rev(order(genplot$Abundance))][1:8]
+# main drivers abundance per cluster
+  RelativeAb <- ggplot(TABLE_abundance_average[TABLE_abundance_average$Genus %in% genplot_,], 
+                       aes(x=Cluster, y=Abundance, fill=Genus)) + 
+  geom_bar(position="stack", stat="identity") + 
+  scale_fill_manual(values = get_palette(palette = rev(PAL_LB) ,
+  k=length(unique(TABLE_abundance_average$Genus[TABLE_abundance_average$Abundance > 0.06]))))+
+  theme_LB() +
+  ggtitle(paste("All Samples
+  Relative abundance of the most abundant genera
+# Top 8 genera, responsible for ",
+round(sum(genplot$Abundance[genplot$Genus %in% genplot_])*100),
+"% of the reads
+  # clusters = ", BestSeed_nclusers , ", seed =",BestSeed))
+RelativeAb
+pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure1/Figure1d/",
+          "Fig1d_Setseed_1.pdf", sep=""), width = 4.5, height=4) 
+print(RelativeAb)
+dev.off()
+@  
+<< Fig 1d:  statistics, message=F>>=
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                 "/Figure1/Figure1d/Boxplotspergenus/", sep=""))
+# step1: perform kruskall.test for all genera
+kruskallgenuslist = c()
+PAN_genus_top15 <- c()
+for (i in Infants ){
+INFT <-  aggregate(Abundance ~ Genus, 
+                   TABLE_abundance_[grepl(i, TABLE_abundance_$Sample.ID),], sum)
+PAN_genus_top15 <- c(PAN_genus_top15, 
+                     as.character(INFT$Genus[rev(order(INFT$Abundance))][1:15]))
+} 
+PAN_genus_top15 <- unique(PAN_genus_top15)
+for (genus in PAN_genus_top15){
+K <-   kruskal.test(TABLE_abundance_$Abundance[TABLE_abundance_$Genus == genus] ~
+                      as.factor(TABLE_abundance_$Cluster[TABLE_abundance_$Genus == genus]))
+pval <- K$p.value
+chisquared <- K$statistic
+kruskallgenuslist <- rbind(kruskallgenuslist,cbind(genus,chisquared,pval))
+}
+
+kruskallgenuslist <- as.data.frame(cbind(kruskallgenuslist,
+                                         p.adjust(kruskallgenuslist[,"pval"],
+                                                                    method="BH")))
+colnames(kruskallgenuslist) <- c("genus","chi-squared","p-value","FDR") 
+
+kruskallgenuslist$FDR <- as.numeric(as.character(kruskallgenuslist$FDR))
+kruskallgenuslist$`p-value` <- as.numeric(as.character(kruskallgenuslist$`p-value`))
+significant_genera <- kruskallgenuslist$genus[kruskallgenuslist$FDR < 0.05]
+write.csv(kruskallgenuslist, paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                                   "/Figure1/Figure1d/Boxplotspergenus/",
+                                   "Fig1d_statistics_Kruskalltest_FDRforNgenera_allgenera.csv", 
+                                   sep=""))
+
+# step2: posthocdunn corrected for combinations of comparisson within the test
+dunngenuslist = list()
+
+for (genus in  significant_genera){
+invisible({capture.output({
+
+D <- as.data.frame(dunn.test(TABLE_abundance_$Abundance[TABLE_abundance_$Genus == genus],
+                  as.factor(TABLE_abundance_$Cluster[TABLE_abundance_$Genus == genus]),
+                  method='bh'))
+})})
+  colnames(D) <- c('chi2','Z','P','P.adj','Comparison')
+
+D$genus <- rep(genus, nrow(D))
+# calculate effect size:
+freq <- as.data.frame(table(unique(TABLE_abundance_[,
+                                      c('Sample.ID','Cluster')])$Cluster))
+for (c in D$Comparison){
+N1 <- freq$Freq[freq$Var1 == word(c,1)]
+N2 <- freq$Freq[freq$Var1 == word(c,3)]
+D$N[D$Comparison == c]  <- sum(N1,N2)
+} #where N is the sum of the samples in the two groups compared
+D$r <-  D$Z/sqrt(D$N)
+D$r2 <- D$r^2
+
+#
+plot <-   ggplot(data= TABLE_abundance_[TABLE_abundance_$Genus == genus,],
+                 aes(y=Abundance,x= Cluster, fill=Cluster)) +
+          geom_boxplot() +
+          theme_LB() +
+          scale_fill_manual(values= as.character(COLORS$Color))+
+          ggtitle(paste('Abundances of genus: ',genus, sep="" ))
+pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+          "/Figure1/Figure1d/Boxplotspergenus/",
+          "Fig1d_boxplot_abundances_",genus,".pdf", sep="")) 
+print(plot)
+dev.off()
+dunngenuslist[[which(significant_genera ==  genus)]] <- D
+}
+
+D_list <- do.call(rbind, dunngenuslist)
+write.csv(D_list, paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                        "/Figure1/Figure1d/Boxplotspergenus/",
+                        "Fig1d_statistics_PosthocDunn_BH_allgenera.csv", 
+                        sep=""))
+# only keep significants
+write.csv(D_list[D_list$P.adj < 0.05,], 
+          paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                        "/Figure1/Figure1d/Boxplotspergenus/",
+                        "Fig1d_statistics_PosthocDunn_BH_allgenera_onlysignificant.csv", 
+                         sep=""))
+
+
+@
+\subsubsection*{Part2: ordination and effect of variables on overall communnity}
+Define the most common variables (present in min3 infants) that will be tested.
+<<Define the most common variables (present in min3 infants) that will be tested, message=F>>=
+EFFECTS_simple_16S <- c('InfantID', 'X.days', 'Siblings','FurryPets', 
+                        'Secretor','Lewis','ABO',
+              'FOOD', 'Consistency', 
+              "ICD_simple_Diarrea","ICD_simple_GeneralSicknessSymptoms",
+              "ICD_simple_Fever","ICD_simple_respiratory",
+              "ATC_level2_J01" ,  "ATC_level2_M01",  "ATC_level2_N02", 'DayCare')
+
+EFFECTS_Categories_simple_16S <- as.data.frame(cbind(EFFECTS_simple_16S, 
+                                c('Infant',  'Infant', 'Infant','Infant', 
+                                  'Infant', 'Infant', 'Infant', 
+                                'Diet',  'Consistency',
+                                rep('ICD_category',4),  
+                                rep('ATC_category',3),'Environment'))) 
+
+colnames(EFFECTS_Categories_simple_16S) <- c('Effect','Category')
+
+FIXEDEFFECTS_simple_16S <- 
+  EFFECTS_Categories_simple_16S$Effect[
+    !EFFECTS_Categories_simple_16S$Effect == 'InfantID']
+RANDOMEFFECT <- c('InfantID')
+VARIABLES_simple_16S <- append(as.character(FIXEDEFFECTS_simple_16S),RANDOMEFFECT)
+
+
+FIXEDEFFECTS_simple_16S_categorical <- 
+  FIXEDEFFECTS_simple_16S[!FIXEDEFFECTS_simple_16S =='X.days']
+FIXEDEFFECTS_simple_16S_ctu <- FIXEDEFFECTS_simple_16S[FIXEDEFFECTS_simple_16S =='X.days']
+
+@
+<<Effects to test 16S: simplified ICD.10 and ATC: ALL, message=F>>=
+EFFECTS_simple_16S_ALL <- c('InfantID', 'X.days', 'Gender',  'Siblings',
+                            'FurryPets', 'Secretor','Lewis','ABO',# 7 infant
+                             'FOOD',
+                  'Consistency', 
+                   colnames(BabyGut16S_metadata)[grepl('ICD_simple',
+                                                    colnames(BabyGut16S_metadata))], 
+                  "ATC_level2_A01_miconazole","ATC_level2_A01_teejel","ATC_level2_A02",
+                  "ATC_level2_A07_Sacharomyces","ATC_level2_A07_Lactobacillus", 
+                  "ATC_level2_A07_antidiarrea", 
+                  "ATC_level2_D01"   ,"ATC_level2_D07",   
+                  "ATC_level2_R01"  ,"ATC_level2_R03" , "ATC_level2_R05" , 
+                  "ATC_level2_J01" ,  "ATC_level2_M01",   
+                  "ATC_level2_N02","ATC_level2_D06" ,
+                  'Holiday','DayCare','FamilyStay') 
+
+EFFECTS_Categories_simple_16S_ALL <- as.data.frame(cbind(EFFECTS_simple_16S_ALL, 
+                                      c('Infant', 'Infant', 'Infant',  'Infant', 
+                                        'Infant', 'Infant', 'Infant', 'Infant', 
+                                       'Diet', 'Consistency', 
+                  rep('ICD_category',
+                      length(colnames(BabyGut16S_metadata)[grepl('ICD_simple',
+                              colnames(BabyGut16S_metadata))])),
+                  rep('ATC_category',15),
+                  'Environment','Environment','Environment')))
+
+colnames(EFFECTS_Categories_simple_16S_ALL) <- c('Effect','Category')
+
+FIXEDEFFECTS_simple_16S_ALL <- EFFECTS_Categories_simple_16S_ALL$Effect[!
+                               EFFECTS_Categories_simple_16S_ALL$Effect == 'InfantID']
+RANDOMEFFECT <- c('InfantID')
+VARIABLES_simple_16S_ALL <- append(as.character(FIXEDEFFECTS_simple_16S_ALL),RANDOMEFFECT)
+
+
+FIXEDEFFECTS_simple_16S_ALL_categorical <- 
+  FIXEDEFFECTS_simple_16S_ALL[!FIXEDEFFECTS_simple_16S_ALL %in% c('X.days')]
+FIXEDEFFECTS_simple_16S_ALL_ctu <- 
+  FIXEDEFFECTS_simple_16S_ALL[FIXEDEFFECTS_simple_16S_ALL %in% c('X.days')]
+
+
+
+@
+Define colors per category.
+<<Define colors per category, message=F>>=
+COLORS_CAT <- 
+as.data.frame(cbind(sort(as.character(unique(EFFECTS_Categories_simple_16S_ALL$Category))), 
+                  sort(as.character(unique(EFFECTS_Categories_simple_16S_ALL$Category)))))
+colnames(COLORS_CAT) <- c("CAT","COLOR")
+COLORS_CAT$COLOR <-  rev(get_palette(PAL_LB_5, nrow(COLORS_CAT)))
+@
+Covariates with non-redundant explanatory power on the genus level ordination, determined by multivariate distance-based redundancy analysis at genus-level (dbRDA, Bray-Curtis dissimilarity, FDR < 0.05). The light bars represent the cumulative explanatory power (stepwise dbRDA R2) and the darker bars represent the individual univariate explanatory power of the variables (dbRDA R2). Covariates present in at less than three infants were excluded. 
+<<Figure 1f, message=F>>=
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure1/",
+                 "Figure1f", sep=""))
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure1/",
+                 "Figure1f/Statistics/", sep=""))
+BabyGut16S_ps_Genus <- tax_glom(BabyGut16S_ps_abundance, taxrank="Genus")
+distance = "bray"
+Table_nona <- subset_samples(BabyGut16S_ps_Genus,!is.na(Consistency)) 
+# remove 4 samples with NAs
+allinfant_pcoa <- ordinate(physeq=Table_nona,method="PCoA",distance = distance)
+Table <-  psmelt(Table_nona)
+
+fdr = 0.05
+
+Table_FIXED <-  as.data.frame(Table[, colnames(Table) %in% 
+                                      append(append(as.character(FIXEDEFFECTS_simple_16S),
+                                             "InfantID"), "Sample") ]) 
+Table_FIXED <- Table_FIXED[!duplicated(Table_FIXED), ]
+rownames(Table_FIXED) <- Table_FIXED$Sample
+Table_FIXED$Sample <- NULL
+######################
+### Capscale : thanks to Sara Vieira Silva
+#####################  
+GENUS <- otu_table(Table_nona) #genus table
+m <- Table_FIXED[match(rownames(GENUS), rownames(Table_FIXED)),] 
+# Be carreful to have the rows of the metadata ordered the same as the genus table.
+all <- c()
+for (ii in 1:ncol(m)) { #loop for each metadata variable
+  capsc <- capscale(GENUS ~ m[,ii], distance = distance, na.action=na.omit) 
+  #fit metadata variable to genus-level matrix
+  an <- anova.cca(capsc) #anova of the fit
+  pval <- an["Pr(>F)"][[1]][[1]] #get p-value
+  Fa <- an["F"][[1]][[1]] #get F score
+  r2 <- RsquareAdj(capsc)[[1]] #get R2 (effect size)
+  r2adj <- RsquareAdj(capsc)[[2]] 
+  #get adjusted R2 (effect size adjusted by eg number of levels in a factor)
+  all <- rbind(all,cbind(Fa,r2,r2adj,pval))
+}
+FDR = p.adjust(all[,"pval"],method="BH")
+all = cbind(all,FDR)
+colnames(all) <- c("F","r2","r2adj","p-value","FDR") #generate table
+row.names(all) <- colnames(m)
+write.table(all , paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                        "/Figure1/Figure1f/Statistics/","AllSamples_Genus_Bray_FDR",fdr,
+                        "_Capscale.tab.txt", sep=""),
+                  quote=F,col.names=NA,row.names=TRUE,sep="\t") 
+
+sig.vars = row.names(all[all[,"FDR"] < fdr & all[,"p-value"] < 0.05 ,])
+
+#### OrdiR2step: 
+#cumulative contribution of variables to inter-sample variation in microbiota composition
+m0 <- get_variable(Table_nona,sig.vars) 
+#select the metadata variables that were significant in capscale 
+m <- na.exclude(m0) 
+GENUS0 <- otu_table(Table_nona)
+GENUS=GENUS0[row.names(GENUS0) %in% row.names(m),] 
+#subset genus table to the samples that were left after removing NAs
+attach(m)
+mod0=capscale(GENUS ~ 1, distance=distance) # Model with intercept only
+mod1=capscale(GENUS ~ ., data=m, distance=distance) # Model with all expl. variables
+set.seed(1)
+step.res<-ordiR2step(mod0, scope=formula(mod1), data=m, direction="forward", Pin = 0.05, 
+                     R2scope = FALSE, pstep = 1000, trace = F)
+step.res$anova
+anova(step.res) # Summary table of stepwise ordination
+
+ordiR2step.tab = data.matrix(step.res$anova[,1:5])
+row.names(ordiR2step.tab) = gsub("\\+ ","",row.names(ordiR2step.tab))
+detach(m)
+write.table(ordiR2step.tab , paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                              "/Figure1/Figure1f/Statistics/","AllSamples_Genus_Bray_FDR",
+                              fdr,"ordiR2step.tab.txt", sep=""),
+                    quote=F,col.names=NA,row.names=TRUE,sep="\t") 
+
+Result <- as.data.frame(step.res$anova)  # Summary table
+Result <- Result[order(Result$R2.adj),]
+Result$R2.adj_independent <- 0
+
+Result$R2.adj_independent[1] <- Result$R2.adj[1]
+if(nrow(Result) == 1){
+  Result$R2.adj_independent <- Result$R2.adj 
+}else if (nrow(Result) == 2){
+  r=2
+  Result$R2.adj_independent[r] <- Result$R2.adj[r] - Result$R2.adj[r-1]
+}else{
+for (r in 2:(nrow(Result))){
+Result$R2.adj_independent[r] <- Result$R2.adj[r] - Result$R2.adj[r-1]
+}}
+
+Result_toplot <- Result[!Result$R2.adj_independent == 0,]
+Result_toplot$Effect <- gsub(".* ", "", rownames(Result_toplot))
+Result_toplot <- merge(Result_toplot, EFFECTS_Categories_simple_16S, by="Effect")
+
+capscale <- as.data.frame(all[all[,"FDR"] < fdr & all[,"p-value"] < 0.05 ,])
+capscale$Effect <- rownames(capscale)
+merged_res <- merge(Result_toplot[,c("Effect",'R2.adj','R2.adj_independent')], 
+                    capscale[rownames(capscale) %in% Result_toplot$Effect , 
+                             c('r2','r2adj',"Effect")], by="Effect")
+merged_res <- merge(merged_res, EFFECTS_Categories_simple_16S, by="Effect")
+colnames(merged_res) <- c('Effect','RDA_r2_adj','RDA_r2_independent','
+                          Capscale_r2',"Capscale_r2_adj","Category")
+
+Result_toplot_melt <- melt(merged_res)
+Result_toplot_melt$Category <- as.character(Result_toplot_melt$Category)
+
+Result_toplot <- Result_toplot[order(Result_toplot$R2.adj_independent),]
+Result_toplot$Effect <- factor(Result_toplot$Effect, levels=Result_toplot$Effect)
+Result_toplot_melt$Effect <- factor(Result_toplot_melt$Effect, 
+                                    levels= rev(Result_toplot$Effect))
+ 
+rr <- ggplot(Result_toplot_melt[Result_toplot_melt$variable %in% 
+                                  c('RDA_r2_adj','Capscale_r2_adj'),],
+             aes(x=Effect, y=value )) + 
+  geom_bar(position = "dodge", stat = "identity", 
+           aes(fill = Category, group=variable, alpha=variable)) + 
+  labs(x = "Covariate", y="Adjusted R2")+
+  scale_fill_manual(values = COLORS_CAT$COLOR[COLORS_CAT$CAT %in% 
+                                        Result_toplot_melt$Category ])   +
+  scale_alpha_manual(values=c(0.5,1))+
+  theme_LB()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  
+rr
+ pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure1/Figure1f/",
+           "Fig1f_OrdiR2step_result_wcomb_RDAr2CUM_w_capscaler2adj_FDR",
+           fdr,".pdf", sep=""))
+print(rr) 
+dev.off()  
+
+@
+Principle coordinate analysis (PCoA, Bray-Curtis dissimilarity) representing genus-level microbiome variation in our infant cohort (N=). Dots represent one sample and are coloured by their assigned enterostage. The arrows represent the effect size and direction of the posthoc fit of variables significantly associated to microbiota compositional variation (infant ID was excluded for clarity)
+<<Figure 1e , message=F>>=
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                 "/Figure1/","Figure1e", sep=""))
+
+# plot results as arrows on pcoa, colored for cluster!!
+mm <- m[match(rownames(allinfant_pcoa$vectors), rownames(m)), ]
+mmm <- mm %>% mutate_all(as.character)
+rownames(mmm) <- rownames(mm)
+
+mmm[mmm == 'Y'] <- 1
+mmm[mmm == 'N'] <- 0
+mmm$Consistency[mmm$Consistency == "Aqueous"] <- 0
+mmm$Consistency[mmm$Consistency == "Soft"] <- 1
+mmm$Consistency[mmm$Consistency == "Solid"] <- 2
+
+mmm$Breast_only <- 0
+mmm$Breast_only[mmm$FOOD == "BreastOnly"] <- 1  
+mmm$SolidFood <- 0
+mmm$SolidFood[mmm$FOOD == "SolidFood"] <-  1
+
+mmm$X.days <- as.numeric(mmm$X.days)
+mmm$Siblings <- as.numeric(mmm$Siblings)
+mmm$FurryPets <- as.numeric(mmm$FurryPets)
+mmm$Consistency <- as.numeric(mmm$Consistency)
+mmm$Breast_only <- as.numeric(mmm$Breast_only)
+mmm$SolidFood <- as.numeric(mmm$SolidFood)
+mmm$FOOD <-NULL
+mmm$DayCare <- as.numeric(mmm$DayCare)
+mmm$ICD_simple_respiratory <- as.numeric(mmm$ICD_simple_respiratory)
+mmm$ICD_simple_GeneralSicknessSymptoms <- 
+  as.numeric(mmm$ICD_simple_GeneralSicknessSymptoms)
+
+# change categoricals in 0/1
+Envfit <- envfit(allinfant_pcoa$vectors,env = mmm, perm = 10000, na.rm=T)
+
+## covariates identified:
+ResultingCovariatesContinuous <- as.data.frame(cbind(Envfit$vectors$pvals, 
+                                                     Envfit$vectors$r))
+colnames(ResultingCovariatesContinuous) <- c('pvals','r2')
+ResultingCovariatesContinuous <- 
+  ResultingCovariatesContinuous[
+    rownames(ResultingCovariatesContinuous) %in% Result_toplot_melt$Effect,]
+
+ResultingCovariatesCategorical <- as.data.frame(cbind(Envfit$factors$pvals, 
+                                                      Envfit$factors$r))
+colnames(ResultingCovariatesCategorical) <- c('pvals','r2')
+ResultingCovariatesCategorical <- ResultingCovariatesCategorical[
+  rownames(ResultingCovariatesCategorical) %in% unique(Result_toplot_melt$Effect),]
+ResultingCovariatesCategorical <- ResultingCovariatesCategorical[!
+  rownames(ResultingCovariatesCategorical) == "InfantID",]
+
+Clusters <- Clusters[match(sample_data(Table_nona)$ID,rownames(Clusters)),]
+
+sample_data(Table_nona)$Cluster  <- t(Clusters)[-1,]
+  p0 <- plot_ordination(physeq=Table_nona, 
+                        ordination = allinfant_pcoa, color="Cluster")+
+    ggtitle(paste("PCoA ,",distance,", All Samples",  sep=""))+
+  scale_color_manual(values= as.character(COLORS$Color))  +
+  theme_LB()+
+  labs( color ="Cluster")+
+    coord_fixed()  ## need aspect ratio of 1!
+    
+if (length(ResultingCovariatesContinuous$pvals < 0.05) >0) {
+Con_effects <- as.data.frame(scores(Envfit, display = "vectors"))
+Con_effects <- Con_effects[rownames(Con_effects) %in% 
+                             c(rownames(ResultingCovariatesContinuous),
+                                                        'Breast_only','SolidFood'),]
+Con_effects <- cbind(Con_effects, Effect = rownames(Con_effects))
+
+p0 <- p0 + geom_segment(data = Con_effects,
+               aes(x = 0, xend = (Axis.1), y = 0, yend = (Axis.2)),
+               arrow = arrow(length = unit(0.25, "cm")), colour = "grey") +
+  geom_text(data = Con_effects, 
+            aes(x = (Axis.1), 
+                y = (Axis.2), 
+                label = Effect),
+            color="black" , size = 3)
+}    
+if (length(rownames(ResultingCovariatesCategorical[
+  ResultingCovariatesCategorical$pvals < 0.05,]))>0){
+centroids <- as.data.frame(Envfit$factors$centroids)
+r <-as.data.frame( Envfit$factors$r)
+Cat_effects <- c()
+
+for (eff in rownames(ResultingCovariatesCategorical[
+  ResultingCovariatesCategorical$pvals < 0.05,])){
+Cat_effects <- rbind(Cat_effects, 
+                     as.data.frame(cbind((centroids[grepl(eff, 
+                                          rownames(centroids)),]*sqrt(r[grepl(eff, 
+                                          rownames(r)),])), 
+                                  rownames(centroids[grepl(eff,rownames(centroids)),]))))
+}
+#Cat_effects <- Cat_effects[-1,]
+colnames(Cat_effects)[3] <- "Effect"
+Cat_effects$Axis.1 <- as.numeric(Cat_effects$Axis.1)
+Cat_effects$Axis.2 <- as.numeric(Cat_effects$Axis.2)
+
+p0 <- p0 + geom_segment(data = Cat_effects,
+               aes(x = 0, xend = Axis.1*5, y = 0, yend = Axis.2*5),
+               arrow = arrow(length = unit(0.25, "cm")), colour = "grey") +
+  geom_text(data = Cat_effects, aes(x = Axis.1*5, y = Axis.2*5, label = Effect),
+            color="black" , size = 3)
+
+}   
+p0
+ pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure1/Figure1e/",
+           "Fig1e_PCoA.pdf", sep=""))
+  print(p0)
+  dev.off()
+
+@
+\subsection*{Figure 2: Ranking according to the order of appearance and detail of Bifidobacterium ASVs}
+<<Figure 2a, warning=F, message=F>>=
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                 "/Figure2/","Figure2a", sep=""))
+
+  
+table  <- subset_samples(BabyGut16S_ps_abundance, Sample.ID %in% LDA_Samples)
+TRESHOLD = 0.005 # abundance treshold to say when a genus is present
+BabyGut16S_ps_abundance_melt <- psmelt(table)
+
+# TOP 15, Only keep Genera, which represent more than 0.05 % of the total abundance
+test <-  aggregate(Abundance~Genus, BabyGut16S_ps_abundance_melt, sum)
+test <- test[rev(order(test$Abundance)),]
+Genera_tokeep <- test$Genus[test$Genus %in% head(test$Genus,17)]
+
+# remove some that are not present in many infants..
+Genera_tokeep <- Genera_tokeep[!Genera_tokeep %in% c('Parabacteroides', 'Megasphaera' )]
+
+print(paste("The top 15 genera are representative to ",
+            round(100*sum(BabyGut16S_ps_abundance_melt$Abundance[
+              BabyGut16S_ps_abundance_melt$Genus %in% 
+              Genera_tokeep])/sum(BabyGut16S_ps_abundance_melt$Abundance), 2),
+            " percentage of the abundance in total",sep=""))
+
+
+PresenceTable <- BabyGut16S_ps_abundance_melt[
+  BabyGut16S_ps_abundance_melt$Genus %in% Genera_tokeep, ]
+PresenceTable <- aggregate(Abundance~Genus+Sample.ID+InfantID+X.days, 
+                           PresenceTable[,!colnames(PresenceTable)%in% 
+                                           c('OTU','OTU_short')],
+                           sum)
+
+PresenceTable <- PresenceTable[order(PresenceTable$X.days),]
+List_infants <- list()
+for (inf in 1:length(as.character(unique(PresenceTable$InfantID)))){
+infant <- as.character(unique(PresenceTable$InfantID))[inf]
+Table_infant <- data.frame(matrix(ncol = length(Genera_tokeep),
+                nrow = length(unique(PresenceTable$Sample.ID[
+                  PresenceTable$InfantID == infant]))))
+rownames(Table_infant) <-unique(PresenceTable$Sample.ID[PresenceTable$InfantID == infant])
+colnames(Table_infant) <- Genera_tokeep
+Table_infant[is.na(Table_infant)] <- 0
+for (days in unique(PresenceTable$X.days[PresenceTable$InfantID == infant])){
+  string <- as.data.frame(cbind(as.character(Genera_tokeep),as.character(Genera_tokeep)))
+  colnames(string) <- c('Genus','FirstDayPresent')
+  string <- string %>% mutate_all(as.character)}
+for (genus in unique(PresenceTable$Genus)) {
+tab <- PresenceTable[PresenceTable$Genus == genus & PresenceTable$InfantID == infant,]
+Table_infant[rownames(Table_infant) == tab$Sample.ID[
+  tab$X.days == min(tab$X.days[tab$Abundance > TRESHOLD])] ,
+  colnames(Table_infant) == genus] <- '1'
+string$FirstDayPresent[string$Genus == genus] <- 
+  min(tab$X.days[tab$Abundance > TRESHOLD])
+}
+
+string <- string[order(as.numeric(string$FirstDayPresent)),]
+string$FirstDayPresent[string$FirstDayPresent == Inf] <- NA
+string$FirstDayPresent <- as.numeric(string$FirstDayPresent)
+for (rank in 1:length(unique(string$FirstDayPresent))){
+string$Rank[string$FirstDayPresent == unique(string$FirstDayPresent)[rank]] <-  rank
+}
+colnames(string)[2:3] <- paste(colnames(string)[2:3],"_",infant, sep="")
+List_infants[[inf]] <- string
+}
+
+TABLE <- merge(List_infants[[1]],List_infants[[2]], by="Genus")
+for (inf in 3:length(as.character(unique(PresenceTable$InfantID)))){
+  TABLE <- merge(TABLE,List_infants[[inf]], by="Genus")}
+table_GF <- melt(TABLE[,grepl('Rank|Genus', colnames(TABLE))])
+table_GF$variable <- gsub('Rank_','',table_GF$variable) 
+colnames(table_GF) <- c('Genus','InfantID','Rank')
+
+medians <- ddply(table_GF, .(Genus), summarise, med = median(Rank, na.rm = T))
+medians <- medians[order(medians$med),]
+table_GF$Genus <- factor(table_GF$Genus, levels=medians$Genus)
+
+kendalltable <- as.data.frame(t(TABLE[,grepl('Day|Genus', colnames(TABLE))])) 
+colnames(kendalltable) <- TABLE$Genus 
+kendalltable <- kendalltable[-1,]
+kendalltable[] <- kendalltable %>% mutate_all(as.character)
+kendalltable[] <- kendalltable %>% mutate_all(as.numeric)
+KENDALOUTCOME <- kendall.w(t(kendalltable), nrands = 10000, type = 1, quiet = T)
+
+genusphylum <- as.data.frame(unique(tax_table(BabyGut16S_ps_abundance)[,
+                                                      c('Genus','Phylum')]))
+rownames(genusphylum) <- genusphylum$Genus
+table_GF_ <- merge(table_GF,genusphylum, by="Genus" )
+
+plot <- ggplot(table_GF_, aes(x=Genus,y=Rank))+
+  geom_boxplot(aes(fill=Phylum), col='grey')  +
+  theme_LB()+
+  scale_fill_LB(length(unique(table_GF_$Phylum)))+ 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  scale_y_continuous(breaks= pretty_breaks())+
+   geom_text(data = medians, aes(x = Genus, y = 0, label = med), size = 3)+
+  ggtitle(paste("Ranks calculated per infant seperatly 
+(Present if Abundance > ",TRESHOLD,") 
+Kendall w corrected: ", KENDALOUTCOME$w.corrected ,"
+Kendall w P-value: ", KENDALOUTCOME$pval,  sep=""))
+plot
+  pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure2/Figure2a/",
+            "Fig2a_OderOfAppearance.pdf", sep=""), width = 12, height=6) 
+print(plot)
+dev.off()
+@
+<<Figure 2b, warning=F, message=F, fig.width=4.5, fig.height=  4  >>=
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                 "/Figure2/Figure2b", sep=""))
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                 "/Figure2/Figure2b/Statistics", sep=""))
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                 "/Figure2/Figure2b/Statistics/GenusLevel_Euclidean_m0infantID", sep=""))
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                 "/Figure2/Figure2b/Statistics/GenusLevel_Euclidean_m0infantID/Boxplots/", 
+                 sep=""))
+
+BabyGut16S_ps_Genus <- tax_glom(BabyGut16S_ps_abundance, taxrank="Genus")
+distance <- 'euclidean'
+                           
+Generaofinterest <- c('Streptococcus','Bifidobacterium','Escherichia','Staphylococcus',
+                      'Enterococcus','Bacteroides','Clostridium_XlVa', 'Faecalibacterium',
+                      'Veillonella','Blautia','Clostridium_sensu_stricto','Clostridium_XVIII',
+                      'Anaerostipes','Lachnospiraceae_uncl','Sutterella') 
+# calculate for the same genera as for which we calculated the ranks
+
+tableresultseuclidean <- as.data.frame(cbind(Generaofinterest,
+                                             Generaofinterest,
+                                             Generaofinterest)) 
+colnames(tableresultseuclidean) <- c('Genus','R2_0.05','Effect_0.05')
+  
+tableresultseuclidean <-  tableresultseuclidean %>% mutate_all(as.character)
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                 "/Figure2/Figure2b/Statistics/","GenusLevel_Euclidean_m0infantID", 
+                 sep="")) 
+for (genus in Generaofinterest ){
+
+Table_nona <- BabyGut16S_ps_Genus %>% subset_samples(.,!is.na(Consistency)) %>% 
+  subset_taxa(.,Genus == genus) 
+Table <-  psmelt(Table_nona) 
+
+factors <-  c('COMMON',"ALL_alsonotcommon")
+fdr = 0.05  
+
+for (factortotest in factors){  
+if (factortotest == 'COMMON'){
+Table_FIXED <-  as.data.frame(Table[, 
+                  colnames(Table) %in% append(append(as.character(FIXEDEFFECTS_simple_16S),
+                                                     "InfantID"),
+                                              "Sample") ])  
+fdr = 0.05  
+
+}
+if (factortotest == "ALL_alsonotcommon"){
+Table_FIXED <-  as.data.frame(Table[, 
+                  colnames(Table) %in% append(append(as.character(FIXEDEFFECTS_simple_16S_ALL),
+                                                     "InfantID"), 
+                                              "Sample") ])
+fdr = 0.1  
+}
+# 
+Table_FIXED <- Table_FIXED[!duplicated(Table_FIXED), ]
+rownames(Table_FIXED) <- Table_FIXED$Sample
+Table_FIXED$Sample <- NULL
+REMOVE <- c()
+
+for (c in 1:ncol(Table_FIXED))  {
+ if (length(table(Table_FIXED[,c])) == 1){ REMOVE <- 
+   append(REMOVE,colnames(Table_FIXED)[c]) }} 
+
+Table_FIXED <- Table_FIXED[,!colnames(Table_FIXED) %in% REMOVE,  drop=F]
+if (ncol(Table_FIXED) > 0){
+
+GENUS <- otu_table(Table_nona) #genus table
+m <- Table_FIXED[match(rownames(GENUS), rownames(Table_FIXED)),drop=F , ] 
+# Be carreful to have the rows of the metadata ordered the same as the genus table.
+  all <- c()
+for (ii in 1:ncol(m)) { 
+  #loop for each metadata variable
+set.seed(4)
+  capsc <- capscale(GENUS ~ m[,ii], distance = distance, na.action=na.omit) 
+  #fit metadata variable to genus-level matrix
+  an <- anova.cca(capsc) #anova of the fit
+  pval <- an["Pr(>F)"][[1]][[1]] #get p-value
+  Fa <- an["F"][[1]][[1]] #get F score
+  r2 <- RsquareAdj(capsc)[[1]] #get R2 (effect size)
+  r2adj <- RsquareAdj(capsc)[[2]]
+  #get adjusted R2 (effect size adjusted by eg number of levels in a factor)
+  all <- rbind(all,cbind(Fa,r2,r2adj,pval))
+}
+FDR = p.adjust(all[,"pval"],method="BH")
+all = cbind(all,FDR)
+colnames(all) <- c("F","r2","r2adj","p-value","FDR") #generate table
+row.names(all) <- colnames(m)
+all
+
+write.table(all,paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                      "/Figure2/Figure2b/Statistics/",
+                      "GenusLevel_Euclidean_m0infantID/Factors_tested",factortotest,
+                      "_FDR_",fdr,"_Genus_",genus, "_Capscale.tab.txt", sep=""), 
+            quote=F,col.names=TRUE,row.names=TRUE,sep="\t") #export table
+
+
+sig.vars = row.names(all[all[,"FDR"] < fdr & all[,"p-value"] < 0.05 & !is.na(all[,"p-value"]),])
+
+if (length(sig.vars) >0){
+#### OrdiR2step:
+if ("InfantID" %in% sig.vars){m0 <- get_variable(Table_nona,sig.vars)}
+  else{m0 <- get_variable(Table_nona,c(sig.vars, 'InfantID'))}
+m <- na.exclude(m0) 
+GENUS0 <- otu_table(Table_nona)
+GENUS=GENUS0[row.names(GENUS0) %in% row.names(m),] 
+attach(m)
+mod0=capscale(GENUS ~ InfantID, data=m ,distance=distance) # Model with InfantID only
+mod1=capscale(GENUS ~ ., data=m, distance=distance) # Model with all explanatory variables
+set.seed(2)
+step.res<-ordiR2step(mod0, scope=formula(mod1), data=m, direction="forward", 
+                     Pin = 0.05, R2scope = FALSE, pstep = 1000, trace = F)
+anova(step.res) # Summary table of stepwise ordination
+if (length(step.res$anova) > 1){
+ordiR2step.tab = data.matrix(step.res$anova[,1:5])
+row.names(ordiR2step.tab) = gsub("\\+ ","",row.names(ordiR2step.tab))
+detach(m)
+write.table(ordiR2step.tab,paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                                 "/Figure2/Figure2b/Statistics/",
+                                 "GenusLevel_Euclidean_m0infantID/Factors_tested",
+                                 factortotest,"_FDR_",fdr,
+                                 "_Genus_",genus, 
+                                 "_ordiR2step.tab", sep=""),
+            quote=F,col.names=TRUE,row.names=TRUE,sep="\t") #export table
+############## 
+Result <- as.data.frame(step.res$anova)  # Summary table
+Result <- Result[order(Result$R2.adj),]
+Result$R2.adj_independent <- 0
+
+Result$R2.adj_independent[1] <- Result$R2.adj[1]
+if (nrow(Result) == 1){
+  r=1
+  Result$R2.adj_independent[r] <- Result$R2.adj[r]
+
+}else if (nrow(Result) == 2){
+  r=2
+  Result$R2.adj_independent[r] <- Result$R2.adj[r] - Result$R2.adj[r-1]
+  
+}else{
+for (r in 2:(nrow(Result))){
+Result$R2.adj_independent[r] <- Result$R2.adj[r] - Result$R2.adj[r-1]
+}}
+
+Result_toplot <- Result[!Result$R2.adj_independent == 0,]
+Result_toplot$Effect <- gsub(".* ", "", rownames(Result_toplot))
+
+if (factortotest == "ALL_alsonotcommon"){
+Result_toplot <- merge(Result_toplot, EFFECTS_Categories_simple_16S_ALL, by="Effect")
+}else{
+Result_toplot <- merge(Result_toplot, EFFECTS_Categories_simple_16S, by="Effect")
+}
+
+
+capscale <- as.data.frame(all[all[,"FDR"] < fdr &
+                                all[,"p-value"] < 0.05 &
+                                !is.na(all[,"p-value"]) ,])
+capscale$Effect <- rownames(capscale)
+merged_res <- merge(Result_toplot[,c("Effect",'R2.adj','R2.adj_independent')], 
+                    capscale[rownames(capscale) %in% Result_toplot$Effect , 
+                             c('r2','r2adj',"Effect")], by="Effect")
+if (factortotest == "ALL_alsonotcommon"){
+merged_res <- merge(merged_res, EFFECTS_Categories_simple_16S_ALL, by="Effect")
+}else{
+merged_res <- merge(merged_res, EFFECTS_Categories_simple_16S, by="Effect")
+}
+colnames(merged_res) <- c('Effect','RDA_r2_adj','RDA_r2_independent',
+                          'Capscale_r2',"Capscale_r2_adj","Category")
+Result_toplot_melt <- melt(merged_res)
+
+Result_toplot_melt$Category <- as.character(Result_toplot_melt$Category)
+
+
+Result_toplot <- Result_toplot[rev(order(Result_toplot$R2.adj)),]
+Result_toplot$Effect <- factor(Result_toplot$Effect, levels=Result_toplot$Effect)
+Result_toplot_melt$Effect <- factor(Result_toplot_melt$Effect, 
+                                    levels= rev(Result_toplot$Effect))
+rr <- ggplot(Result_toplot_melt[Result_toplot_melt$variable %in% 
+                                  c('RDA_r2_adj','Capscale_r2_adj'),], 
+             aes(x=Effect, y=value )) + 
+  geom_bar(position = "dodge", stat = "identity", 
+           aes(fill = Category, group=variable, alpha=variable)) + 
+  labs(x = "Covariate", y="Individual/Cumulative adjusted R2")+
+  scale_fill_manual(
+    values = COLORS_CAT$COLOR[COLORS_CAT$CAT %in% Result_toplot_melt$Category ])+
+  scale_alpha_manual(values=c(0.5,1))+
+  theme_LB()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  
+
+pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+          "/Figure2/Figure2b/Statistics/",
+          "GenusLevel_Euclidean_m0infantID/Factors_tested",factortotest,
+          "_FDR_",fdr,
+          "_Genus_",genus, "_ordiR2step.pdf", sep=""))
+ print(rr) 
+dev.off()  
+
+
+if(factortotest == "COMMON"){
+for (e in unique(Result_toplot_melt$Effect)){
+if (e == "X.days"){
+ee <- ggplot(Table, aes(x=get(e), y=Abundance )) + 
+  geom_point(color= COLORS_CAT$COLOR[COLORS_CAT$CAT %in% 
+                    Result_toplot_melt$Category[Result_toplot_melt$Effect == e]],
+              fill=COLORS_CAT$COLOR[COLORS_CAT$CAT %in% 
+                          Result_toplot_melt$Category[Result_toplot_melt$Effect == e]], 
+  alpha=0.7) + 
+  theme_LB()+
+  ylab(paste("Abundance of ",genus,sep=""))+
+  xlab(paste('Days after birth',sep=""))  
+}
+else{
+ee <- ggplot(Table, aes(x=get(e), y=Abundance )) + 
+  geom_boxplot(color= COLORS_CAT$COLOR[COLORS_CAT$CAT %in% 
+                                  Result_toplot_melt$Category[Result_toplot_melt$Effect == e]],
+               fill=COLORS_CAT$COLOR[COLORS_CAT$CAT %in% 
+                                  Result_toplot_melt$Category[Result_toplot_melt$Effect == e]], 
+               alpha=0.7) + 
+  theme_LB()+ 
+  ylab(paste("Abundance of ",genus,sep=""))+
+  xlab(paste(e,sep=""))
+
+if(length(unique(Table[,e])) == 2){
+ee <-   ee+ ggtitle(paste('Wilcoxon test p: ',
+                          wilcox.test(Abundance~get(e), Table)$p.value, 
+                          sep="")) 
+}else{ 
+  ee <- ee+ ggtitle(paste('Kruskall test p: ',
+                          kruskal.test(Abundance~as.factor(get(e)), Table)$p.value, 
+                          sep=""))
+
+if (kruskal.test(Abundance~as.factor(get(e)), Table)$p.value < 0.05){
+  invisible({capture.output({
+D <- as.data.frame(dunn.test(Table$Abundance ,
+                             as.factor(Table[,colnames(Table) == e]), 
+                             method='bh'))
+})})
+colnames(D) <- c('chi2','Z','P','P.adj','Comparison')
+D$genus <- rep(genus, nrow(D))
+# calculate effect size:
+freq <- as.data.frame(table(unique(Table[,c('Sample.ID',e)])[,e]))
+for (c in D$Comparison){
+N1 <- freq$Freq[freq$Var1 == word(c,1)]
+N2 <- freq$Freq[freq$Var1 == word(c,3)]
+D$N[D$Comparison == c]  <- sum(N1,N2)
+} #where N is the sum of the samples in the two groups compared
+D$r <-  D$Z/sqrt(D$N)
+D$r2 <- D$r^2
+
+}
+
+}
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                 "/Supplementary/Bifido_Statistics", sep=""))
+
+write.csv(D, paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                   "/Supplementary/Bifido_Statistics/",
+                   genus,"_statistics_PosthocDunn_BH.csv", sep=""))
+  
+  }
+}
+  ee
+pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Supplementary/",
+          "Fig_Bifido_BOXPLOT_",genus, 
+          "_significanteffect_",e,
+          "Alltested.pdf", sep=""))
+ print(ee) 
+dev.off() 
+
+tableresultseuclidean[tableresultseuclidean$Genus == genus, 
+  colnames(tableresultseuclidean) == paste("R2_", fdr,sep="")] <- 
+  max(Result_toplot$R2.adj_independent)
+
+tableresultseuclidean[tableresultseuclidean$Genus == genus, 
+  colnames(tableresultseuclidean) == paste("Effect_", fdr,sep="")] <- 
+  as.character(Result_toplot$Effect[Result_toplot$R2.adj_independent == 
+                                      max(Result_toplot$R2.adj_independent)])
+
+}
+}
+}
+}
+}
+}
+fdr=0.05
+  tableresultseuclidean_ <- 
+    tableresultseuclidean[,colnames(tableresultseuclidean) == "Genus" | 
+                              grepl(fdr, colnames(tableresultseuclidean))]
+  tableresultseuclidean_ <- 
+    tableresultseuclidean_[tableresultseuclidean_$Genus %in% Generaofinterest,]
+  tableresultseuclidean_ <- tableresultseuclidean_[
+    !tableresultseuclidean_$Genus == tableresultseuclidean_[,
+                                paste("R2_",fdr,sep="")],]
+  tableresultseuclidean_[,paste("R2_",fdr,sep="")] <- 
+    as.numeric(tableresultseuclidean_[,paste("R2_",fdr,sep="")])
+  tableresultseuclidean_ <- tableresultseuclidean_[order(tableresultseuclidean_[,
+                                                        paste("R2_",fdr,sep="")]),]
+  tableresultseuclidean_$Genus <- factor(tableresultseuclidean_$Genus, 
+                                         levels=tableresultseuclidean_$Genus)
+  
+  write.csv(tableresultseuclidean_,  paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                                    "/Figure2/Figure2b/Statistics/",
+                                    "GenusLevel_Euclidean_m0infantID/Factors_tested_ALL_FDR_",
+                                    fdr,"_Allgenera.csv", sep=""))
+
+  
+plot <- ggplot(tableresultseuclidean_, 
+               aes(x=Genus, y=get(paste("R2_",fdr,sep="")), 
+                   fill=get(paste("Effect_",fdr,sep=""))))+
+  geom_bar(stat = "identity")+
+  labs(x = "Genus", y="RDA: Individual adjusted R2")+
+  scale_fill_manual(values=COLORS_CAT$COLOR[COLORS_CAT$CAT %in% 
+                        as.character(EFFECTS_Categories_simple_16S_ALL$Category[
+                        EFFECTS_Categories_simple_16S_ALL$Effect %in% 
+                        unique(tableresultseuclidean_[,paste("Effect_",fdr,sep="")])]) ])+
+  theme_LB()+
+  labs(fill="")+
+   coord_flip()
+plot
+pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure2/Figure2b/",
+          "Fig2b_ALLfactors_FDR_",fdr, 
+          "_ordiR2step.pdf", sep=""), height=8, width=6)
+print(plot)
+dev.off()
+@
+<<Figure 2c , message=F, fig.width=4.5, fig.height=  4 >>=
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure2/Figure2c", sep=""))
+
+BabyGut16S_ps_abundance_melt <- psmelt(BabyGut16S_ps_abundance) 
+
+BabyGut16S_ps_abundance_melt_test_AGG <- aggregate(Abundance ~OTU+ID  ,
+                                                   FUN=sum, data=BabyGut16S_ps_abundance_melt)
+BabyGut16S_ps_abundance_melt_test_OTU<-merge(BabyGut16S_ps_abundance_melt_test_AGG,
+                                          expand.grid(ID=unique(BabyGut16S_ps_abundance_melt_test_AGG$ID),
+                                                      OTU=unique(BabyGut16S_ps_abundance_melt_test_AGG$OTU),
+                                                      stringsAsFactors=F),all.y=T)
+BabyGut16S_ps_abundance_melt_test_OTU$Abundance[is.na(BabyGut16S_ps_abundance_melt_test_OTU$Abundance)]<-0
+
+BabyGut16S_ps_abundance_melt_test_OTU_ <- merge(BabyGut16S_ps_abundance_melt_test_OTU, 
+      BabyGut16S_metadata[BabyGut16S_metadata$ID %in% sample_data(BabyGut16S_ps_abundance)$ID,], by="ID") 
+
+
+BabyGut16S_ps_abundance_melt_test_OTU_$Genus <- 1
+for (f in unique(BabyGut16S_ps_abundance_melt_test_OTU_$OTU)){
+BabyGut16S_ps_abundance_melt_test_OTU_$Genus[BabyGut16S_ps_abundance_melt_test_OTU_$OTU == f] <- 
+  as.character(unique(BabyGut16S_ps_abundance_melt$Genus[BabyGut16S_ps_abundance_melt$OTU == f]))
+BabyGut16S_ps_abundance_melt_test_OTU_$OTU_short[BabyGut16S_ps_abundance_melt_test_OTU_$OTU == f] <- 
+  as.character(unique(BabyGut16S_ps_abundance_melt$OTU_short[BabyGut16S_ps_abundance_melt$OTU == f]))
+
+}
+
+genus = 'Bifidobacterium'
+BabyGut16S_ps_abundance_melt_test_OTU_bifido <- BabyGut16S_ps_abundance_melt_test_OTU_[BabyGut16S_ps_abundance_melt_test_OTU_$Genus ==  genus,]
+BabyGut16S_ps_abundance_melt_test_OTU_bifido <- BabyGut16S_ps_abundance_melt_test_OTU_bifido[!is.na(BabyGut16S_ps_abundance_melt_test_OTU_bifido$Sample.ID),]
+
+
+Line_Actino <-  ggplot(BabyGut16S_ps_abundance_melt_test_OTU_bifido[
+  BabyGut16S_ps_abundance_melt_test_OTU_bifido$OTU_short %in% 
+    c('Bifidobacterium_1','Bifidobacterium_2'),], 
+                       aes(x=X.days,y=Abundance,color=OTU_short, group = OTU_short)) + 
+     scale_color_manual(values=c("#DFE07C","#1D3554"))+
+      xlab("Days after birth") +
+      ylab(paste("Abundance of Genus ", genus, sep="")) +
+      ggtitle(paste("Abundance over time, per OTU,   ", genus, "
+Plotted ASvs represent ",
+round(sum(BabyGut16S_ps_abundance_melt_test_OTU_bifido$Abundance[
+  BabyGut16S_ps_abundance_melt_test_OTU_bifido$OTU_short %in% 
+    c('Bifidobacterium_1','Bifidobacterium_2')] )*100/
+    sum(BabyGut16S_ps_abundance_melt_test_OTU_bifido$Abundance), 2),
+"% of all Bifidobacterium reads", sep=""))  +
+  theme_LB()+    
+  geom_smooth(span=0.5 , method="loess")
+Line_Actino
+pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure2/Figure2c/",
+          "Fig2c_AbundancesBifido.pdf", sep=""), width = 8, height = 6) 
+print(Line_Actino)
+dev.off()
+@
+<<Figure 2ef , message=F>>=
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                 "/Figure2/Figure2ef", sep=""))
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                 "/Figure2/Figure2ef/Statistics", sep=""))
+
+SETSEED = 1
+distance <- 'euclidean'
+genus <- "Bifidobacterium"
+
+for (otu_short in c('Bifidobacterium_1','Bifidobacterium_2')){
+  Table_nona_otushort <-  subset_samples(BabyGut16S_ps_abundance,
+    !is.na(Consistency)) %>% subset_taxa(.,Genus == genus)  %>%
+    subset_taxa(.,OTU_short == otu_short)
+  
+Table <-  psmelt(Table_nona_otushort) 
+factortotest <- "COMMON"
+Table_FIXED <-  as.data.frame(Table[,colnames(Table) %in%
+                      append(append(as.character(FIXEDEFFECTS_simple_16S), 
+                                    "InfantID"), "Sample") ])
+
+Table_FIXED <- Table_FIXED[!duplicated(Table_FIXED), ]
+rownames(Table_FIXED) <- Table_FIXED$Sample
+Table_FIXED$Sample <- NULL
+
+REMOVE <- c()
+for (c in 1:ncol(Table_FIXED))  {
+ if (length(table(Table_FIXED[,c])) == 1){ 
+   REMOVE <- append(REMOVE,colnames(Table_FIXED)[c]) 
+   }} 
+  #only 1 level
+
+Table_FIXED <- Table_FIXED[,!colnames(Table_FIXED) %in% REMOVE,  drop=F]
+if (ncol(Table_FIXED) > 0){
+GENUS <- otu_table(Table_nona_otushort) #genus table
+m <- Table_FIXED[match(rownames(GENUS), rownames(Table_FIXED)),drop=F , ] 
+# Be carreful to have the rows of the metadata ordered the same as the genus table.
+
+
+all <- c()
+for (ii in 1:ncol(m)) { #loop for each metadata variable
+  capsc <- capscale(GENUS ~ m[,ii], distance = distance, na.action=na.omit) #fit metadata variable to genus-level matrix
+  an <- anova.cca(capsc) #anova of the fit
+  pval <- an["Pr(>F)"][[1]][[1]] #get p-value
+  Fa <- an["F"][[1]][[1]] #get F score
+  r2 <- RsquareAdj(capsc)[[1]] #get R2 (effect size)
+  r2adj <- RsquareAdj(capsc)[[2]] #get adjusted R2 (effect size adjusted by eg number of levels in a factor)
+  all <- rbind(all,cbind(Fa,r2,r2adj,pval))
+}
+FDR = p.adjust(all[,"pval"],method="BH")
+all = cbind(all,FDR)
+colnames(all) <- c("F","r2","r2adj","p-value","FDR") #generate table
+row.names(all) <- colnames(m)
+all
+
+write.table(all,paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                      "/Figure2/Figure2ef/Statistics/",factortotest,"_FDR_",fdr,
+                      "_OTU_",otu_short, "_Capscale.tab.txt", sep=""),
+            quote=F,col.names=TRUE,row.names=TRUE,sep="\t") #e
+
+
+sig.vars = row.names(all[all[,"FDR"] < fdr & all[,"p-value"] < 0.05 & !is.na(all[,"p-value"]),])
+if (length(sig.vars) >0){
+  if ("InfantID" %in% sig.vars){
+    m0 <- get_variable(Table_nona,sig.vars)
+    }else{
+    m0 <- get_variable(Table_nona,c(sig.vars, 'InfantID'))
+    }
+m <- na.exclude(m0) 
+GENUS0 <- otu_table(Table_nona_otushort)
+GENUS=GENUS0[row.names(GENUS0) %in% row.names(m),]
+attach(m)
+mod0=capscale(GENUS ~ InfantID, data=m, distance=distance)
+mod1=capscale(GENUS ~ ., data=m, distance=distance) 
+set.seed(SETSEED)
+
+step.res<-ordiR2step(mod0, scope=formula(mod1), data=m, direction="forward", 
+                     Pin = 0.05, R2scope = FALSE, pstep = 1000, trace = F)
+step.res$anova
+anova(step.res) # Summary table of stepwise ordination
+if (length(step.res$anova)>0){
+ordiR2step.tab = data.matrix(step.res$anova[,1:5])
+row.names(ordiR2step.tab) = gsub("\\+ ","",row.names(ordiR2step.tab))
+detach(m)
+
+  write.table(ordiR2step.tab,paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                                   "/Figure2/Figure2ef/Statistics/",factortotest,
+                                   "_FDR_",fdr,"_OTU_",otu_short, "_ordiR2step.tab.txt", sep=""),
+              quote=F,col.names=TRUE,row.names=TRUE,sep="\t") #e
+
+############## 
+
+Result <- as.data.frame(step.res$anova)  # Summary table
+Result <- Result[order(Result$R2.adj),]
+Result$R2.adj_independent <- 0
+Result$R2.adj_independent[1] <- Result$R2.adj[1]
+if (nrow(Result) == 1){
+  r=1
+  Result$R2.adj_independent[r] <- Result$R2.adj[r]
+} else 
+  if (nrow(Result) == 2){
+  r=2
+  Result$R2.adj_independent[r] <- Result$R2.adj[r] - Result$R2.adj[r-1]
+}else{
+  for (r in 2:(nrow(Result))){
+Result$R2.adj_independent[r] <- Result$R2.adj[r] - Result$R2.adj[r-1]
+} }
+
+Result_toplot <- Result[!Result$R2.adj_independent == 0,]
+Result_toplot$Effect <- gsub(".* ", "", rownames(Result_toplot))
+if (factortotest == "ALL_alsonotcommon"){
+Result_toplot <- merge(Result_toplot, EFFECTS_Categories_simple_16S_ALL, by="Effect")
+}else{
+Result_toplot <- merge(Result_toplot, EFFECTS_Categories_simple_16S, by="Effect")
+}
+capscale <- as.data.frame(all[all[,"FDR"] < fdr & all[,"p-value"] < 0.05 & !is.na(all[,"p-value"]) ,])
+capscale$Effect <- rownames(capscale)
+merged_res <- merge(Result_toplot[,c("Effect",'R2.adj','R2.adj_independent')],
+                    capscale[rownames(capscale) %in% Result_toplot$Effect ,
+                             c('r2','r2adj',"Effect")], by="Effect")
+if (factortotest == "ALL_alsonotcommon"){
+merged_res <- merge(merged_res, EFFECTS_Categories_simple_16S_ALL, by="Effect")
+}else{
+merged_res <- merge(merged_res, EFFECTS_Categories_simple_16S, by="Effect")
+}
+colnames(merged_res) <- c('Effect','RDA_r2_adj','RDA_r2_independent','Capscale_r2',
+                          "Capscale_r2_adj","Category")
+Result_toplot_melt <- melt(merged_res)
+
+Result_toplot_melt$Category <- as.character(Result_toplot_melt$Category)
+
+Result_toplot <- Result_toplot[rev(order(Result_toplot$R2.adj)),]
+Result_toplot$Effect <- factor(Result_toplot$Effect, levels=Result_toplot$Effect)
+Result_toplot_melt$Effect <- factor(Result_toplot_melt$Effect, 
+                                    levels= rev(Result_toplot$Effect))
+rr <- ggplot(Result_toplot_melt[Result_toplot_melt$variable %in% c('RDA_r2_adj','Capscale_r2_adj'),],
+             aes(x=Effect, y=value )) + 
+  geom_bar(position = "dodge", stat = "identity", aes(fill = Category, group=variable, alpha=variable)) + 
+  labs(x = "Covariate", y="Individual/Cumulative adjusted R2")+
+  scale_fill_manual(values = COLORS_CAT$COLOR[COLORS_CAT$CAT %in% Result_toplot_melt$Category ])   +
+  scale_alpha_manual(values=c(0.5,1))+
+  theme_LB()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  
+
+pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure2/Figure2ef/Statistics/",
+          factortotest,"_FDR_",fdr,"_OTU_",otu_short, "_ordiR2step.pdf", sep=""))
+
+ print(rr) 
+dev.off()  
+
+
+for (e in unique(Result_toplot_melt$Effect)){
+if (e == "X.days"){
+ee <- ggplot(Table, aes(x=get(e), y=Abundance )) + 
+  geom_point(color= COLORS_CAT$COLOR[COLORS_CAT$CAT %in% Result_toplot_melt$Category[Result_toplot_melt$Effect == e]],
+    fill=COLORS_CAT$COLOR[COLORS_CAT$CAT %in% Result_toplot_melt$Category[Result_toplot_melt$Effect == e]], 
+    alpha=0.7) + 
+  theme_LB()+
+    ylab(paste("Abundance of ",otu_short,sep=""))+
+  xlab(paste('Days after birth',sep=""))  
+}
+else{
+ee <- ggplot(Table, aes(x=get(e), y=Abundance )) + 
+  geom_boxplot(color= COLORS_CAT$COLOR[COLORS_CAT$CAT %in% Result_toplot_melt$Category[Result_toplot_melt$Effect == e]],
+  fill=COLORS_CAT$COLOR[COLORS_CAT$CAT %in% Result_toplot_melt$Category[Result_toplot_melt$Effect == e]], 
+  alpha=0.7) + 
+  theme_LB()+ 
+  ylab(paste("Abundance of ",otu_short,sep=""))+
+  xlab(paste(e,sep=""))
+
+if(length(unique(Table[,e])) == 2){
+ee <-   ee+ ggtitle(paste('Wilcoxontest p: ',round(wilcox.test(Abundance~get(e), Table)$p.value,5), sep="")) 
+}else{ 
+  ee <- ee+ ggtitle(paste('Kruskal test p: ',round(kruskal.test(Abundance~as.factor(get(e)), Table)$p.value,5), 
+                          sep=""))
+  print(otu_short)
+  print(kruskal.test(Abundance~as.factor(get(e)), Table)$p.value)
+invisible({capture.output({
+D <- as.data.frame(dunn.test(Table$Abundance ,as.factor(Table[,colnames(Table) == e]), method='bh'))
+})}) 
+colnames(D) <- c('chi2','Z','P','P.adj','Comparison')
+D$otu_short <- rep(otu_short, nrow(D))
+# calculate effect size:
+freq <- as.data.frame(table(unique(Table[,c('Sample.ID',e)])[,e]))
+for (c in D$Comparison){
+N1 <- freq$Freq[freq$Var1 == word(c,1)]
+N2 <- freq$Freq[freq$Var1 == word(c,3)]
+D$N[D$Comparison == c]  <- sum(N1,N2)
+} #where N is the sum of the samples in the two groups compared
+D$r <-  D$Z/sqrt(D$N)
+D$r2 <- D$r^2
+
+}
+
+}
+
+write.csv(D, paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                   "/Figure2/Figure2ef/Statistics/",otu_short,"_significanteffect_",e,
+                   "_statistics_PosthocDunn_BH.csv", sep=""))
+ee
+pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure2/Figure2ef/",
+          "Fig2ef_BOXPLOT",otu_short, "_significanteffect_",e,"Alltested.pdf", sep=""))
+ print(ee) 
+dev.off()  
+}
+}
+}
+}
+}
+
+@
+<<Figure 2d, message=F>>=
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                 "/Figure2/Figure2d/", sep=""))
+distance="bray"
+BabyGut16S_ps_distance <- phyloseq::distance(BabyGut16S_ps_Genus, method=distance)
+
+Table_nona_otshort <- subset_samples(BabyGut16S_ps_abundance,!is.na(Consistency)) %>%
+                      subset_taxa(.,OTU_short %in% 
+                                    c('Bifidobacterium_1','Bifidobacterium_2') )
+ratio <-  as.data.frame(cbind(as.numeric(otu_table(Table_nona_otshort)[,1]),
+                              as.numeric(otu_table(Table_nona_otshort)[,2])), 
+                        sample_data(Table_nona_otshort)$ID)
+
+ratio$ratio <- ratio$V1 / ( ratio$V1 + ratio$V2) 
+ratio$V1 <- NULL
+ratio$V2<- NULL
+sample_data(Table_nona)$Abundance <- as.numeric(ratio$ratio)
+
+PcoA_i <- plot_ordination(physeq=Table_nona, 
+                          ordination = allinfant_pcoa, 
+                          color="Abundance")+
+    ggtitle(paste("PCoA ,",distance,sep=""))+
+    theme_LB()+
+    labs(color=paste("Ratio abundance
+of ASV_1/
+(ASV_1 + ASV_2)", sep=""))+
+     scale_color_gradientn(colours = c("#1D3554","#DFE07C"), 
+                           na.value="white",limits = c(0,1))
+PcoA_i
+pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure2/Figure2d/",
+          "Fig2d_PCoA_coloredby_Bifidobacteriumratio.pdf", sep="")) 
+print(PcoA_i)
+dev.off() 
+
+@
+\subsection*{Figure 3: External factors}
+<<Figure 3a, fig.width=12, fig.height=3, message=F>>=
+
+PLOT <- ggplot(test_all, aes(x=X.days, y=Cluster, color=Cluster, group=1)) + 
+    geom_point(data = test_all[test_all$Sample.ID %in% Enterostagechange$Sample.ID[Enterostagechange$change_stepback == "Yes" & !(Enterostagechange$change_2 == "No_nodrasticchange")],], 
+               aes(x=X.days,y=Cluster, color=Cluster, group=InfantID),size = 4)+# 
+  geom_point(size = 1)+
+  scale_color_manual(values= as.character(COLORS$Color))  +
+  facet_wrap(~InfantID, nrow = 1)+
+  theme_LB() +
+  ggtitle(paste("Samples LDA+extern
+# clusters = ", BestSeed_nclusers , ", seed =",BestSeed))+
+  scale_y_discrete(expand=c(0.3, 0))+
+  xlab('Days after birth')
+PLOT
+pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure3/","Fig3a.pdf", sep=""),
+    width = 12, height=3) 
+print(PLOT)
+dev.off()  
+
+@
+Calculate the weighted averages per sample for ALL samples
+<<Figure 3b, fig.width=12, fig.height=3, message=F>>=
+Resultsranking <- medians
+Resultsranking$NewRank <-as.numeric(factor(rank(Resultsranking$med)))
+weightedaverage_allsamples_ <- 
+  psmelt(BabyGut16S_ps_abundance)
+weightedaverage_allsamples_agg <-  
+  aggregate(Abundance~Genus+Sample, weightedaverage_allsamples_, sum)
+weightedaverage_allsamples_agg$Abundance[
+  weightedaverage_allsamples_agg$Abundance > TRESHOLD] <- 1
+weightedaverage_allsamples_agg$Abundance[
+  weightedaverage_allsamples_agg$Abundance <= TRESHOLD] <- 0
+
+weightedaverage_allsamples <- weightedaverage_allsamples_agg
+wiehtedaverage_results <- as.data.frame(cbind(unique(weightedaverage_allsamples$Sample),
+                                              unique(weightedaverage_allsamples$Sample)))
+colnames(wiehtedaverage_results) <- c('Sample','weightedaverage')
+wiehtedaverage_results <- wiehtedaverage_results %>% mutate_all(as.character)
+for (sample in unique(weightedaverage_allsamples$Sample)){
+  weightedaverage_samples <- 
+    weightedaverage_allsamples[weightedaverage_allsamples$Sample == sample, ]
+  weightedaverage_samples <- 
+    merge(weightedaverage_samples,
+          Resultsranking[,c("NewRank","Genus")], 
+          by="Genus")
+wiehtedaverage_results$weightedaverage[wiehtedaverage_results$Sample == sample] <- 
+  weighted.mean(weightedaverage_samples$NewRank, w=weightedaverage_samples$Abundance)
+}
+
+wiehtedaverage_results$weightedaverage <- as.numeric(wiehtedaverage_results$weightedaverage)
+wiehtedaverage_results$ID <- wiehtedaverage_results$Sample
+
+wiehtedaverage_results <- 
+  merge(wiehtedaverage_results,
+       unique(BabyGut16S_metadata[,c('ID','InfantID','X.days')]), 
+       by="ID")
+
+rownames(wiehtedaverage_results) <- wiehtedaverage_results$ID
+wiehtedaverage_results <- merge(wiehtedaverage_results,Clusters,by=0)
+
+write.csv(wiehtedaverage_results, 
+          paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                 "/Supplementary/",
+                "Table_weightedaverages.csv", sep="") ) 
+
+plot <- ggplot(wiehtedaverage_results, aes(x=X.days, y=weightedaverage,color=Cluster))+ 
+  geom_point(data = wiehtedaverage_results[
+      wiehtedaverage_results$Sample.ID %in% Enterostagechange$Sample.ID[
+        Enterostagechange$change_stepback == "Yes" &
+          !(Enterostagechange$change_2 == "No_nodrasticchange")],], 
+               aes(x=X.days,y=weightedaverage, color=Cluster, group=InfantID),size = 4)+
+  theme_LB() +
+  geom_point(size=1)+
+  scale_color_manual(values= as.character(COLORS$Color))  +
+  ggtitle(paste('Weigted Averages per sample, presence as >', TRESHOLD, sep=""))+
+  xlab("Days after birth")+
+           facet_wrap(~InfantID, nrow=1) +
+        stat_smooth(data=wiehtedaverage_results, 
+                    aes(x=X.days, y = weightedaverage, group=InfantID),
+                    method = "lm", 
+                    formula = y ~ x + I(x^2), 
+                    size = 1, 
+                    color="black", 
+                    level=0.95) #95% Confidence interval
+
+plot
+  pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure3/",
+            "Fig3b_WeightedAverages_quadraticsmooth_",TRESHOLD,".pdf", sep=""), 
+      width = 12, height=3) 
+print(plot)
+dev.off()
+
+
+# get residuals
+for (inf in Infants){
+invisible({capture.output({
+model <- stats::lm(wiehtedaverage_results$weightedaverage[wiehtedaverage_results$InfantID == inf] ~ 
+                     wiehtedaverage_results$X.days[wiehtedaverage_results$InfantID == inf] + 
+                     I(wiehtedaverage_results$X.days[wiehtedaverage_results$InfantID == inf]^2))
+print(inf)
+print(summary(model))
+  write.csv(summary(model)$coefficients, 
+            paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                                  "/Supplementary/","Fig3b_WeightedAverages_",TRESHOLD,
+                                  "Quadratic_modelstatistics_infant_",inf,
+                                  "with_adj.r.squared_",summary(model)$adj.r.squared,
+                                  ".csv", sep="")) 
+
+wiehtedaverage_results$modelFit[wiehtedaverage_results$InfantID == inf] <- predict(model)
+wiehtedaverage_results$modelResiduals[wiehtedaverage_results$InfantID == inf]<- residuals(model)
+wiehtedaverage_results$modelLWR[wiehtedaverage_results$InfantID == inf]<-predict(model,
+                                               interval= 'confidence', level=0.95)[,2]
+  wiehtedaverage_results$modelUPR[wiehtedaverage_results$InfantID == inf]<- predict(model, 
+                                                interval= 'confidence', level=0.95)[,3]
+})})
+}
+
+@
+<<External events of interest, message=F>>=
+
+S004_AB_URINARYTRACTINFECTION <-  c('S004-113','S004-114','S004-116','S004-117', 
+                                    'S004-121', 'S004-122', 'S004-124', 'S004-134')
+S009_Buikgriep <- c('S009-179','S009-181','S009-182','S009-185','S009-191')
+S011_ALL <-  BabyGut16S_metadata$Sample.ID[
+  grepl('S011', BabyGut16S_metadata$Sample.ID) & BabyGut16S_metadata$X.days <= 150 ]
+events <- 
+  list(S011_ALL,S004_AB_URINARYTRACTINFECTION,S009_Buikgriep)
+
+events_names <- c('S011_ALL','S004_AB_URINARYTRACTINFECTION','S009_Buikgriep')
+legend <- list()
+# seperatly
+for (i in 1:length(events_names)){
+
+ps_event = subset_samples(BabyGut16S_ps, Sample.ID %in%  events[[i]])  %>% 
+  prune_taxa(taxa_sums(.) > 0, .)
+ps_event_abundance <- transform_sample_counts(ps_event, function(OTU) OTU/sum(OTU))
+ps_event_abundance_melt_procent <- psmelt(ps_event_abundance) %>% 
+  filter(Abundance > 0.02)
+ if (events_names[i] == "S011_ALL") { 
+   ps_event_abundance_melt_procent <- psmelt(ps_event_abundance) %>% 
+     filter(Abundance > 0.02)
+}
+ps_event_abundance_melt_procent_test<-merge(ps_event_abundance_melt_procent,
+                                            expand.grid(X.days=unique(ps_event_abundance_melt_procent$X.days),
+                                                        OTU=unique(ps_event_abundance_melt_procent$OTU),
+                                                        stringsAsFactors=F),all.y=T)
+ps_event_abundance_melt_procent_test$Abundance[
+  is.na(ps_event_abundance_melt_procent_test$Abundance)]<-0
+## Genus-level
+ps_event_abundance_melt_procent_test_AGG <- aggregate(Abundance ~Genus+X.days  ,
+                                                      FUN=sum, 
+                                                      data=ps_event_abundance_melt_procent_test)
+
+ps_event_abundance_melt_procent_test_Genus <-
+  merge(ps_event_abundance_melt_procent_test_AGG,  
+        ps_event_abundance_melt_procent_test[,!colnames(ps_event_abundance_melt_procent_test) %in% 
+                                               c('Abundance','OTU', "OTU_short")], 
+        by=c("Genus","X.days"), 
+        all.x=F) 
+
+ps_event_abundance_melt_procent_test_Genus <- 
+  ps_event_abundance_melt_procent_test_Genus[
+    !duplicated(ps_event_abundance_melt_procent_test_Genus), ]
+
+ps_event_abundance_melt_procent_test_Genus<-
+  merge(ps_event_abundance_melt_procent_test_Genus,
+        expand.grid(X.days=unique(ps_event_abundance_melt_procent_test_Genus$X.days),
+                    Genus=unique(ps_event_abundance_melt_procent_test_Genus$Genus),
+                    stringsAsFactors=F),
+        all.y=T)
+ps_event_abundance_melt_procent_test_Genus$Abundance[
+  is.na(ps_event_abundance_melt_procent_test_Genus$Abundance)]<-0
+ps_event_abundance_melt_procent_test_Genus$Genus <- 
+  as.character(ps_event_abundance_melt_procent_test_Genus$Genus)
+ legend[[i]] <- unique(ps_event_abundance_melt_procent_test_Genus$Genus)
+
+STACKED_Genus <- ggplot(ps_event_abundance_melt_procent_test_Genus, 
+                        aes(x=X.days,y=as.numeric(Abundance),fill=Genus)) + 
+  geom_area(aes(y=as.numeric(Abundance), group=Genus, fill=Genus),
+            position = 'stack') +
+  scale_fill_LB(length(unique(ps_event_abundance_melt_procent_test_Genus$Genus)))+
+  xlab("Days after birth") +
+  ylab("Abundance of Genera") +
+  ggtitle(paste("Genus abundance over time, ",
+                toString(events_names[i]) , sep="")) + 
+  geom_point(aes(x=X.days, y=0))+
+  theme_LB()
+STACKED_Genus
+  pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure3/",
+            "External_Stackedplot_Genus_", events_names[i],".pdf",sep=""),
+      width = 15 , height = 10 )
+  print(STACKED_Genus)
+ dev.off()
+ if (events_names[i] == "S011_ALL") {
+    pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure3/",
+              "External_Stackedplot_Genus_", events_names[i],".pdf",sep=""),
+        width = 30 , height = 10 )
+  print(STACKED_Genus)
+ dev.off()
+ }
+
+}
+
+ @
+<<MaAslin prepare tables, message=F>>=
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                 "/Supplementary/","Maaslin", sep="") ) 
+
+Maaslin_METADATA <- sample_data(BabyGut16S_ps_abundance)[,
+      colnames(sample_data(BabyGut16S_ps_abundance)) %in% EFFECTS_Categories_simple_16S_ALL$Effect]
+Maaslin_METADATA  <- as.data.frame(as(Maaslin_METADATA, 'matrix'))
+Maaslin_METADATA$X.days <- as.numeric(Maaslin_METADATA$X.days)
+
+#OTU
+Maaslin_OTU_DATA <- otu_table(BabyGut16S_ps_abundance)
+tax_table_otu<- tax_table(BabyGut16S_ps_abundance)
+
+for (col in 1:ncol(Maaslin_OTU_DATA)){
+colnames(Maaslin_OTU_DATA)[col]  <- tax_table_otu[(colnames(Maaslin_OTU_DATA)[col]),"OTU_short"] 
+}
+Maaslin_OTU_DATA  <- as.data.frame(as(Maaslin_OTU_DATA, 'matrix'))
+
+#Genus
+ps_stool_abundance_Genus <- tax_glom(BabyGut16S_ps_abundance,taxrank = "Genus" )
+otu_table_genus <- otu_table(ps_stool_abundance_Genus)
+tax_table_genus <- tax_table(ps_stool_abundance_Genus)
+for (col in 1:ncol(otu_table_genus)){
+colnames(otu_table_genus)[col]  <- tax_table_genus[(colnames(otu_table_genus)[col]),6] 
+}
+Maaslin_Genus_DATA <- as.data.frame(as(otu_table_genus, 'matrix'))
+
+@
+<<run MaAslin2 , message=F, warning=F>>=
+#devtools::install_bitbucket("biobakery/maaslin2@default", ref="0.99.12")
+library(Maaslin2)
+setwd(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Supplementary/","Maaslin", sep="") ) 
+invisible({capture.output({
+
+fit_data_OTU <- Maaslin2(Maaslin_OTU_DATA,Maaslin_METADATA, "output_OTU")
+fit_data_Genus <- Maaslin2(Maaslin_Genus_DATA, Maaslin_METADATA, "output_Genus")
+
+})})
+@
+\subsection*{Figure 4: Adult projection}
+<< enterotyping of the infants , message=F>>=
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                 "/Figure4/Figure4a/",sep=""))
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                 "/Figure4/Figure4a/Statistics",sep=""))
+  
+Enterotypes_babies <- read.delim(paste(Workdir, 
+                          "/Data/Data_adultprojection/BabyGut_Enterotyping_prob_assignment.tsv", 
+                          sep=""))
+
+Enterotypes_babies$Sample <- gsub("\\.","-", Enterotypes_babies$Sample)
+
+for (r in 1:nrow(Enterotypes_babies)){
+      Enterotypes_babies$Enterotype[r] <- 
+        colnames(Enterotypes_babies)[match(max(Enterotypes_babies[r,2:5]),
+                                               Enterotypes_babies[r,])]
+    }
+    
+Enterotypes_FGFP <- read.delim(paste(Workdir,
+                          "/Data/Data_adultprojection/FGFP_Enterotyping_prob_assignment.tsv", 
+                          sep=""))
+colnames(Enterotypes_FGFP) <- c('Sample','ET_clusters','Enterotype')
+Enterotypes_FGFP$Sample <- gsub("\\.","-", Enterotypes_FGFP$Sample)
+Enterotypes_FGFP$Enterotype <- as.character(Enterotypes_FGFP$Enterotype)
+Enterotypes_FGFP <- Enterotypes_FGFP[!grepl('S0',  Enterotypes_FGFP$Sample),]
+  
+Clusters  <- Stats_persample[,c("Sample.ID","Cluster")]
+
+@
+<< Fig 4a Barplot on abundance level, message=F>>=
+dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure4/Figure4a/",sep=""))
+  ## barplots
+  Genus_Abundances_allages <- read.delim(paste(Workdir, 
+                                  "/Data/Data_adultprojection/FGFP_BabyGut_genus_ab.tsv", sep=""))
+  
+  colnames(Genus_Abundances_allages) <- gsub("\\.","-", colnames(Genus_Abundances_allages))
+  colnames(Genus_Abundances_allages)[1] <- "Genus"
+  Genus_Abundances_allages$Genus <- as.character(Genus_Abundances_allages$Genus)
+  Genus_Abundances_allages$Genus[Genus_Abundances_allages$Genus=="g.Escherichia/Shigella"] <- 
+    as.character("g.Escherichia_Shigella")
+  Genus_Abundances_allages[,-1] <- 
+    Genus_Abundances_allages[,-1] / colSums(Genus_Abundances_allages[,-1])
+  rownames(Genus_Abundances_allages) <- Genus_Abundances_allages$Genus
+  Genus_Abundances_allages_melt <- melt(Genus_Abundances_allages)
+  colnames(Genus_Abundances_allages_melt) <- c('Genus','Sample.ID','Abundance')
+  Genus_Abundances_allages_melt <- merge(Genus_Abundances_allages_melt, 
+            BabyGut16S_metadata[BabyGut16S_metadata$Sample.ID %in% 
+                                  Genus_Abundances_allages_melt$Sample.ID ,
+                                c('Sample.ID','X.days','InfantID')], all = TRUE)
+  
+  Genus_Abundances_allages_melt$InfantID <- 
+    as.character(Genus_Abundances_allages_melt$InfantID)
+  Genus_Abundances_allages_melt$InfantID[is.na(Genus_Abundances_allages_melt$InfantID)] <- 
+    "Adult"
+  Genus_Abundances_allages_melt$ID <- Genus_Abundances_allages_melt$InfantID
+  Genus_Abundances_allages_melt$ID[grepl('S0', Genus_Abundances_allages_melt$InfantID)] <- 
+    "Infant"
+  
+  Genus_Abundances_allages_melt <- merge(Genus_Abundances_allages_melt, 
+            Clusters[Clusters$Sample.ID %in% Genus_Abundances_allages_melt$Sample.ID ,
+                     c('Sample.ID','Cluster')], all = TRUE)
+  
+  colnames(Genus_Abundances_allages_melt)[colnames(Genus_Abundances_allages_melt)  == "Cluster"] <-
+    "Enterostage"
+  Genus_Abundances_allages_melt$Enterostage[is.na(Genus_Abundances_allages_melt$Enterostage)] <-
+    "Adult"
+  Enterotypes_FGFP$Sample.ID <- Enterotypes_FGFP$Sample
+  
+  Genus_Abundances_allages_melt <- merge(Genus_Abundances_allages_melt,
+           Enterotypes_FGFP[Enterotypes_FGFP$Sample.ID %in% Genus_Abundances_allages_melt$Sample.ID ,
+                  c('Sample.ID','Enterotype')], all = TRUE)
+  
+  Genus_Abundances_allages_melt$Enterotype[is.na(Genus_Abundances_allages_melt$Enterotype)] <-
+    "Infant_Bact2"
+
+  Genus_Abundances_allages_melt$Enterotype <- 
+    factor(Genus_Abundances_allages_melt$Enterotype, 
+                            levels=c('Infant_Bact2','Bact1','Bact2','Prev','Rum'))
+  Genus_Abundances_allages_melt$Enterostage <- 
+    factor(Genus_Abundances_allages_melt$Enterostage, 
+                            levels=c('A','B','C','D','Adult'))
+  
+  
+  #enterotype
+  Genus_Abundances_allages_melt_average <- 
+    aggregate(Abundance~Enterotype+Genus,Genus_Abundances_allages_melt,mean)
+  
+  genplot <- as.data.frame(aggregate(Abundance~Genus,Genus_Abundances_allages_melt,mean))
+  genplot <- genplot[rev(order(genplot$Abundance)),]
+  genplot_ <- genplot$Genus[genplot$Abundance > 0.01]
+  # main drivers abundance per cluster
+    RelativeAb <- ggplot(Genus_Abundances_allages_melt_average[
+      Genus_Abundances_allages_melt_average$Genus %in% genplot_,],
+    aes(x=Enterotype, y=Abundance, fill=Genus)) + 
+    geom_bar(position="stack", stat="identity") + 
+    scale_fill_manual(values = get_palette(palette = rev(PAL_LB) ,k=length(genplot_)))+
+    theme_LB() +
+    ggtitle(paste("Relative abundance of the most abundant genera"))
+    
+  RelativeAb
+  pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure4/Figure4a/",
+            "Fig4a_relativeabundancesperenterotype.pdf", sep=""), width = 10, height=8) 
+  print(RelativeAb)
+  dev.off()
+  
+  Genera_tokeep_2 <- as.character(Genera_tokeep)
+  Genera_tokeep_2[Genera_tokeep_2 =="Escherichia"] <- c('Escherichia_Shigella')
+  Genera_tokeep_2[Genera_tokeep_2 =="Clostridium_XVIII"] <- c('Clostridium.XVIII')
+  Genera_tokeep_2[Genera_tokeep_2 =="Clostridium_sensu_stricto"] <- c('Clostridium.sensu.stricto')
+  Genera_tokeep_2[Genera_tokeep_2 =="Clostridium_XlVa"] <- c('Clostridium.XlVa')
+  Genera_tokeep_2 <- paste('g.', Genera_tokeep_2, sep="")
+  Genera_tokeep_2[Genera_tokeep_2 =="g.Lachnospiraceae_uncl"] <- c('unclassified')
+  
+Genus_Abundances_allages_melt_average$Genus2 <- Genus_Abundances_allages_melt_average$Genus
+Genus_Abundances_allages_melt_average$Genus2[!Genus_Abundances_allages_melt_average$Genus %in% Genera_tokeep_2] <- 'NotTop15' 
+Genus_Abundances_allages_melt_average_2 <- aggregate(Abundance~Enterotype+Genus2,Genus_Abundances_allages_melt_average, sum)
+Genus_Abundances_allages_melt_average_2$Genus2 <- factor(Genus_Abundances_allages_melt_average_2$Genus2, levels=c("NotTop15", rev(Genera_tokeep_2)))
+
+
+   RelativeAb <- ggplot(Genus_Abundances_allages_melt_average_2, 
+                        aes(x=Enterotype, y=Abundance, fill=Genus2)) + 
+    geom_bar(position="stack", stat="identity") + 
+    scale_fill_manual(values = c("gray", get_palette(palette = rev(PAL_LB) ,k=15))) +
+    theme_LB() +
+    ggtitle(paste("Relative abundance of the most abundant genera"))
+    
+  RelativeAb
+  pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure4/Figure4a/",
+            "Fig4a_relativeabundancesperenterotype_TOP15.pdf", sep=""), width = 10, height=8) 
+  print(RelativeAb)
+  dev.off()
+    
+  
+@
+<< Fig 4 b,c,d Projection of infants and adults all together, message=F >>=
+  dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                   "/Figure4/Figure4bcd/",sep=""))
+  dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                   "/Figure4/Figure4bcd/Statistics",sep=""))
+  
+PCoA_DMM_together <- read.delim(paste(Workdir, 
+                    "/Data/Data_adultprojection/PCoA.coordinates.DMMtogether_10axes.tsv", 
+                    sep=""))
+
+colnames(PCoA_DMM_together)[1] <- "Sample"
+PCoA_DMM_together$Sample <- gsub("\\.","-", PCoA_DMM_together$Sample)
+colnames(PCoA_DMM_together)[1] <- 'Sample.ID'
+PCoA_DMM_together <- merge(PCoA_DMM_together, BabyGut16S_metadata[,
+                                              c('Sample.ID','X.days','InfantID')], 
+                           all = TRUE)
+PCoA_DMM_together <- PCoA_DMM_together[!is.na(PCoA_DMM_together$Axis.1),]
+PCoA_DMM_together$InfantID <- as.character(PCoA_DMM_together$InfantID)
+PCoA_DMM_together$InfantID[is.na(PCoA_DMM_together$InfantID)] <- "Adult"
+
+PCoA_DMM_together$ID <- PCoA_DMM_together$InfantID
+PCoA_DMM_together$ID[grepl('S0', PCoA_DMM_together$InfantID)] <- "Infant"
+
+PCoA_DMM_together <- merge(PCoA_DMM_together, Clusters, by="Sample.ID", all = TRUE)
+PCoA_DMM_together$Cluster[is.na(PCoA_DMM_together$Cluster)] <- ""
+for (sample in PCoA_DMM_together$Sample.ID){
+  if(grepl('S0', sample) & sample %in% Enterotypes_babies$Sample){ 
+    PCoA_DMM_together$Enterotype[PCoA_DMM_together$Sample.ID == sample] <- Enterotypes_babies$Enterotype[Enterotypes_babies$Sample == sample] 
+    }
+  if(grepl('VDP', sample)){
+    PCoA_DMM_together$Enterotype[PCoA_DMM_together$Sample.ID == sample] <- Enterotypes_FGFP$Enterotype[Enterotypes_FGFP$Sample == sample] 
+    }
+  
+}
+
+p1<- ggplot(PCoA_DMM_together, aes(x=Axis.1, y=Axis.2, color=X.days)) +
+  geom_point()+
+scale_color_gradientn(colours = c(lightcol,darkcol))+
+  theme_LB() +  
+  labs( color ="Days After Birth")
+
+p2 <- ggplot(PCoA_DMM_together, aes(x=Axis.1, y=Axis.2, color=InfantID)) +
+  geom_point()+
+  scale_color_manual(values=c("grey",colors_LB))+
+  theme_LB()+  
+  labs( color ="ID")
+
+p3 <- ggplot(PCoA_DMM_together, aes(x=Axis.1, y=Axis.2, color=Enterotype, shape=ID)) +
+  geom_point()+
+  scale_color_manual(values = as.character(PAL_LB_5[c(2,3,4,5)]))+
+  theme_LB()+  
+  labs( color ="Enterotype") +scale_shape_manual(values=c(16,1))
+
+p4 <- ggplot(PCoA_DMM_together, aes(x=Axis.1, y=Axis.2, color=Cluster, shape=ID)) +
+  geom_point()+
+  scale_color_manual(values=c('grey','orange','blue','green','red'))+
+  theme_LB()+  
+  labs( color ="Enterostage") +scale_shape_manual(values=c(16,1))
+
+pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure4/Figure4bcd/",
+          "Fig4c_Together_time.pdf", sep=""), height=6, width = 7) 
+print(p1)
+dev.off()
+pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure4/Figure4bcd/",
+          "Fig4b_Together_enterotype.pdf", sep=""), height=6, width = 7) 
+print(p3)
+dev.off()
+
+pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure4/Figure4bcd/",
+          "Fig4d_Together_enterotype_and_enterostage.pdf", sep=""), height=6, width = 7) 
+print(p4)
+dev.off()
+@
+<< Fig4: statistics, message=F>>=
+  
+Genus_Abundances_allages_melt_dist <- vegdist(t(Genus_Abundances_allages[,-1]), "bray")
+PCOA <- ape::pcoa(Genus_Abundances_allages_melt_dist)
+res <- as.data.frame(PCOA$vectors)
+res$Sample.ID <- rownames(res)
+res <- merge(res, BabyGut16S_metadata[,c('Sample.ID','X.days','InfantID')], all = TRUE)
+res <- res[!is.na(res$Axis.1),]
+res$InfantID <- as.character(res$InfantID)
+res$InfantID[is.na(res$InfantID)] <- "Adult"
+
+res$ID <- res$InfantID
+res$ID[grepl('S0', res$InfantID)] <- "Infant"
+
+res <- merge(res, Clusters, by="Sample.ID", all = TRUE)
+res <- res[!res$Sample.ID =="VDP-05725",]
+res$Cluster[is.na(res$Cluster)] <- ""
+for (sample in res$Sample.ID){
+  if(grepl('S0', sample) & sample %in% Enterotypes_babies$Sample){ 
+    res$Enterotype[res$Sample.ID == sample] <- Enterotypes_babies$Enterotype[Enterotypes_babies$Sample == sample] 
+    }
+  if(grepl('VDP', sample)){
+    res$Enterotype[res$Sample.ID == sample] <- Enterotypes_FGFP$Enterotype[Enterotypes_FGFP$Sample == sample] 
+    }
+  
+}
+
+p1<- ggplot(res, aes(x=Axis.1, y=Axis.2, color=X.days)) +
+  geom_point()+
+scale_color_gradientn(colours = c(lightcol,darkcol))+
+  theme_LB() +  
+  labs( color ="Days After Birth")
+
+#### Adonis for ID
+metadata_e <- unique(Genus_Abundances_allages_melt[,c('Sample.ID','ID')])
+rownames(metadata_e) <- metadata_e$Sample.ID
+adonis <- adonis(formula = t(Genus_Abundances_allages[,-1]) ~ ID , 
+                 data = as.data.frame(metadata_e),method = "bray", permutations=999)
+                                    
+
+write.csv(adonis$aov.tab, paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+          "/Figure4/Figure4bcd/Statistics/","Fig4b_Together_pairwiseadonis_IDs.csv", sep=""))
+
+#### Adonis for enterotype
+metadata_e <- unique(Genus_Abundances_allages_melt[,c('Sample.ID','Enterotype')])
+rownames(metadata_e) <- metadata_e$Sample.ID
+adonis <- adonis(formula = t(Genus_Abundances_allages[,-1]) ~ Enterotype , 
+                 data = as.data.frame(metadata_e),method = "bray", permutations=999)
+if (adonis$aov.tab$`Pr(>F)`[1] < 0.05){#If you only do the pairwise on the comparisons for which the global adonis was significant, you can call it a post-hoc pairwise adonis.
+pairwisecombos<-  combn(unique(Genus_Abundances_allages_melt$Enterotype), m=2)
+adonis_list <- c()
+for (c in 1:ncol(pairwisecombos)){
+C1 <- pairwisecombos[1,c]
+C2 <- pairwisecombos[2,c]
+colnames_selection<- metadata_e$Sample.ID[metadata_e$Enterotype %in% c(as.character(C1),as.character(C2))]
+
+adonis <- adonis(formula = t(Genus_Abundances_allages[,
+                      colnames(Genus_Abundances_allages) %in% colnames_selection]) ~ Enterotype , 
+                 data = as.data.frame(metadata_e[metadata_e$Sample.ID %in% colnames_selection,]),
+                 method = "bray", permutations=999)
+adonis_list <- rbind(adonis_list, c(as.character(C1),
+                                    as.character(C2),
+                                    adonis$aov.tab$`Pr(>F)`[1], 
+                                    adonis$aov.tab$R2[1], 
+                                    length(colnames_selection))) 
+}    
+}
+adonis_list <- as.data.frame(adonis_list)
+colnames(adonis_list) <- c('C1','C2','Pr(>F)','R2','N')
+adonis_list$FDR <- p.adjust(adonis_list[,'Pr(>F)'])
+
+write.csv(adonis_list, paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                             "/Figure4/Figure4bcd/Statistics/",
+                             "Fig4b_Together_pairwiseadonis_enterotypes.csv", 
+                             sep=""))
+
+#### Adonis for enterostage
+metadata_e <- unique(Genus_Abundances_allages_melt[,c('Sample.ID','Enterostage')])
+rownames(metadata_e) <- metadata_e$Sample.ID
+adonis <- adonis(formula = t(Genus_Abundances_allages[,-1]) ~ Enterostage ,
+                 data = as.data.frame(metadata_e),method = "bray", permutations=999)
+if (adonis$aov.tab$`Pr(>F)`[1] < 0.05){
+pairwisecombos<-  combn(unique(Genus_Abundances_allages_melt$Enterostage), m=2)
+adonis_list <- c()
+for (c in 1:ncol(pairwisecombos)){
+C1 <- pairwisecombos[1,c]
+C2 <- pairwisecombos[2,c]
+colnames_selection<- metadata_e$Sample.ID[metadata_e$Enterostage %in% c(as.character(C1),
+                                                                        as.character(C2))]
+
+adonis <- adonis(formula = t(Genus_Abundances_allages[,
+                            colnames(Genus_Abundances_allages) %in% colnames_selection]) ~ Enterostage , 
+                 data = as.data.frame(metadata_e[metadata_e$Sample.ID %in% colnames_selection,]),
+                 method = "bray", permutations=999)
+adonis_list <- rbind(adonis_list, 
+                     c(as.character(C1),
+                       as.character(C2),
+                       adonis$aov.tab$`Pr(>F)`[1], 
+                       adonis$aov.tab$R2[1], 
+                       length(colnames_selection))) 
+}    
+}
+adonis_list <- as.data.frame(adonis_list)
+
+colnames(adonis_list) <- c('C1','C2','Pr(>F)','R2','N')
+adonis_list$FDR <- p.adjust(adonis_list[,'Pr(>F)'])
+
+write.csv(adonis_list, paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                            "/Figure4/Figure4bcd/Statistics/",
+                            "Fig4b_Together_pairwiseadonis_enterostage.csv", 
+                            sep=""))
+
+
+
+@
+<< 4e adults:alpha, message=F >>=
+  dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                   "/Figure4/Figure4e/",sep=""))
+  dir.create(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                   "/Figure4/Figure4e/Statistics",sep=""))
+
+table_alphadiversity_BabiesandFGFP <- read.csv2(paste(Workdir, 
+                  "/Data/Data_adultprojection/table_alphadiversity_BabiesandFGFP.csv", 
+                  sep=""))
+
+
+
+table_alphadiversity_BabiesandFGFP$SampleID <- 
+  gsub("\\.","-", table_alphadiversity_BabiesandFGFP$SampleID)
+colnames(table_alphadiversity_BabiesandFGFP)[
+  colnames(table_alphadiversity_BabiesandFGFP) == "SampleID"] <- 'Sample.ID'
+rownames(table_alphadiversity_BabiesandFGFP) <- table_alphadiversity_BabiesandFGFP$Sample.ID
+table_alphadiversity_BabiesandFGFP <- 
+  merge(table_alphadiversity_BabiesandFGFP, 
+     BabyGut16S_metadata[BabyGut16S_metadata$Sample.ID %in% 
+                           table_alphadiversity_BabiesandFGFP$Sample.ID ,
+     c('Sample.ID','X.days','InfantID')], 
+     by="Sample.ID",all = TRUE)
+
+table_alphadiversity_BabiesandFGFP$InfantID <- 
+  as.character(table_alphadiversity_BabiesandFGFP$InfantID)
+table_alphadiversity_BabiesandFGFP$InfantID[
+  is.na(table_alphadiversity_BabiesandFGFP$InfantID)] <- "Adult"
+table_alphadiversity_BabiesandFGFP$ID <- 
+  table_alphadiversity_BabiesandFGFP$InfantID
+table_alphadiversity_BabiesandFGFP$ID[
+  grepl('S0', table_alphadiversity_BabiesandFGFP$InfantID)] <- "Infant"
+table_alphadiversity_BabiesandFGFP_melt <- 
+  melt(table_alphadiversity_BabiesandFGFP,
+                      measure.vars=c('Observed','Shannon','Simpson','InvSimpson') )
+
+table_alphadiversity_BabiesandFGFP <- merge(table_alphadiversity_BabiesandFGFP,
+                                            Clusters[!Clusters$Sample.ID == "S004-162",],
+                                            by="Sample.ID", all = TRUE)
+table_alphadiversity_BabiesandFGFP$Cluster[
+  is.na(table_alphadiversity_BabiesandFGFP$Cluster)] <- ""
+
+
+for (alpha in c('Observed','Shannon')){
+statistics_adults <- summary(table_alphadiversity_BabiesandFGFP[
+  table_alphadiversity_BabiesandFGFP$ID == "Adult", 
+  colnames(table_alphadiversity_BabiesandFGFP) == alpha])
+
+table_alphadiversity_BabiesandFGFP$AgeBin[
+  table_alphadiversity_BabiesandFGFP$X.days < 90] <- '1_0-3m'
+table_alphadiversity_BabiesandFGFP$AgeBin[
+  table_alphadiversity_BabiesandFGFP$X.days >= 90 & 
+                       table_alphadiversity_BabiesandFGFP$X.days < 180] <- '2_3-6m'
+table_alphadiversity_BabiesandFGFP$AgeBin[
+  table_alphadiversity_BabiesandFGFP$X.days >= 180 &
+                       table_alphadiversity_BabiesandFGFP$X.days < 270] <- '3_6-9m'
+table_alphadiversity_BabiesandFGFP$AgeBin[
+  table_alphadiversity_BabiesandFGFP$X.days >= 270] <- '4_9-12m'
+table_alphadiversity_BabiesandFGFP$AgeBin[
+  is.na(table_alphadiversity_BabiesandFGFP$X.days)] <- '5_adults'
+
+palpha_box <- ggplot(table_alphadiversity_BabiesandFGFP, aes(x=AgeBin, y= get(alpha), fill=AgeBin)) +
+  geom_boxplot()+
+  theme_LB() +
+  scale_fill_viridis_d(5) +
+  ylab(paste(alpha))
+
+pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure4/Figure4e/",
+          "Fig4_boxplot",alpha,"_agebins.pdf", sep=""))
+print(palpha_box)  
+dev.off()
+
+palpha <- ggplot(table_alphadiversity_BabiesandFGFP[
+  table_alphadiversity_BabiesandFGFP$ID == "Infant",],
+                 aes(x=X.days,y=get(alpha) ))+
+   geom_rect(ymin = quantile(table_alphadiversity_BabiesandFGFP[
+     table_alphadiversity_BabiesandFGFP$ID == "Adult",
+  colnames(table_alphadiversity_BabiesandFGFP) == alpha], probs=0.1),
+           ymax = quantile(table_alphadiversity_BabiesandFGFP[
+             table_alphadiversity_BabiesandFGFP$ID == "Adult",
+             colnames(table_alphadiversity_BabiesandFGFP) == alpha], probs=0.25), 
+            xmin = -Inf, xmax = Inf, fill = grey(0.9), alpha=0.5)+
+   geom_rect(ymin = quantile(table_alphadiversity_BabiesandFGFP[
+     table_alphadiversity_BabiesandFGFP$ID == "Adult",
+  colnames(table_alphadiversity_BabiesandFGFP) == alpha], probs=0.75),
+           ymax = quantile(table_alphadiversity_BabiesandFGFP[
+             table_alphadiversity_BabiesandFGFP$ID == "Adult", 
+             colnames(table_alphadiversity_BabiesandFGFP) == alpha], probs=0.9), 
+            xmin = -Inf, xmax = Inf, fill = grey(0.9), alpha=0.5)+  
+   geom_rect(ymin = quantile(table_alphadiversity_BabiesandFGFP[
+     table_alphadiversity_BabiesandFGFP$ID == "Adult",
+  colnames(table_alphadiversity_BabiesandFGFP) == alpha], probs=0.25),
+           ymax = quantile(table_alphadiversity_BabiesandFGFP[
+             table_alphadiversity_BabiesandFGFP$ID == "Adult", 
+             colnames(table_alphadiversity_BabiesandFGFP) == alpha], probs=0.75), 
+            xmin = -Inf, xmax = Inf, fill = grey(0.65), alpha=0.5)  +
+  geom_hline(yintercept=quantile(table_alphadiversity_BabiesandFGFP[
+    table_alphadiversity_BabiesandFGFP$ID == "Adult", 
+    colnames(table_alphadiversity_BabiesandFGFP) == alpha])[[3]], size=1.5) +
+  scale_color_LB_infants(8)+
+  geom_smooth(colour='white', method="auto")+
+    geom_point(aes(color=InfantID))+
+  ggtitle(paste("Alpha Diversity at genus level: ",alpha,  sep="")) + 
+  theme_LB() +
+  facet_wrap(~InfantID, nrow=1)+
+  xlab('Days After Birth')+
+  ylab(paste(alpha))+
+  ylim(0, quantile(table_alphadiversity_BabiesandFGFP[table_alphadiversity_BabiesandFGFP$ID == "Adult", colnames(table_alphadiversity_BabiesandFGFP) == alpha], probs=0.92))
+  
+palpha
+
+  pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure4/Figure4e/",
+            "Fig4_",alpha,".pdf", sep=""), height=3, width = 10)
+print(palpha)  
+dev.off()
+
+
+
+palpha2 <- ggplot(table_alphadiversity_BabiesandFGFP[table_alphadiversity_BabiesandFGFP$ID == "Infant",], 
+                  aes(x=X.days,y=get(alpha) ))+
+   geom_rect(ymin = quantile(table_alphadiversity_BabiesandFGFP[table_alphadiversity_BabiesandFGFP$ID == "Adult",
+  colnames(table_alphadiversity_BabiesandFGFP) == alpha], probs=0.1),
+           ymax = quantile(table_alphadiversity_BabiesandFGFP[table_alphadiversity_BabiesandFGFP$ID == "Adult", colnames(table_alphadiversity_BabiesandFGFP) == alpha], probs=0.25), 
+            xmin = -Inf, xmax = Inf, fill = grey(0.9), alpha=0.5)+
+   geom_rect(ymin = quantile(table_alphadiversity_BabiesandFGFP[table_alphadiversity_BabiesandFGFP$ID == "Adult",
+  colnames(table_alphadiversity_BabiesandFGFP) == alpha], probs=0.75),
+           ymax = quantile(table_alphadiversity_BabiesandFGFP[table_alphadiversity_BabiesandFGFP$ID == "Adult", colnames(table_alphadiversity_BabiesandFGFP) == alpha], probs=0.9), 
+            xmin = -Inf, xmax = Inf, fill = grey(0.9), alpha=0.5)+  
+   geom_rect(ymin = quantile(table_alphadiversity_BabiesandFGFP[table_alphadiversity_BabiesandFGFP$ID == "Adult",
+  colnames(table_alphadiversity_BabiesandFGFP) == alpha], probs=0.25),
+           ymax = quantile(table_alphadiversity_BabiesandFGFP[table_alphadiversity_BabiesandFGFP$ID == "Adult", colnames(table_alphadiversity_BabiesandFGFP) == alpha], probs=0.75), 
+            xmin = -Inf, xmax = Inf, fill = grey(0.65), alpha=0.5)  +
+  geom_hline(yintercept=quantile(table_alphadiversity_BabiesandFGFP[table_alphadiversity_BabiesandFGFP$ID == "Adult", colnames(table_alphadiversity_BabiesandFGFP) == alpha])[[3]], size=1.5) +
+  scale_color_manual(values=c('grey','orange','blue','green','red'))+
+  geom_smooth(colour='white', method="auto")+
+    geom_point(aes(color=Cluster))+
+  ggtitle(paste("Alpha Diversity at genus level: ",alpha,  sep="")) + 
+  theme_LB() +
+  facet_wrap(~InfantID, nrow=1)+
+  xlab('Days After Birth')+
+  ylab(paste(alpha))+
+  ylim(0, quantile(table_alphadiversity_BabiesandFGFP[
+    table_alphadiversity_BabiesandFGFP$ID == "Adult", 
+    colnames(table_alphadiversity_BabiesandFGFP) == alpha], 
+    probs=0.92))
+
+  pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+            "/Figure4/Figure4e/",
+            "Fig4_colenterostage",alpha,".pdf", sep=""),
+      height=3, width = 10)
+print(palpha2)  
+dev.off()
+
+
+
+table_alphadiversity_BabiesandFGFP$Cluster <- 
+  factor(table_alphadiversity_BabiesandFGFP$Cluster, 
+         levels=c('A','B','C','D','Adult'))
+palpha_box <- ggplot(table_alphadiversity_BabiesandFGFP, 
+                     aes(x=Cluster, y= get(alpha), fill=Cluster)) +
+  geom_boxplot()+
+  theme_LB() +
+  scale_fill_LB(5) +
+  ylab(paste(alpha))
+pdf(paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),"/Figure4/Figure4e/",
+          "Fig4_boxplot",alpha,"_Cluster.pdf", sep=""))
+print(palpha_box)  
+dev.off()
+
+}
+for (m in c("Observed", "Shannon")){
+K <-   kruskal.test(table_alphadiversity_BabiesandFGFP[,
+    colnames(table_alphadiversity_BabiesandFGFP) == m] ~ 
+      as.factor(table_alphadiversity_BabiesandFGFP$AgeBin ))
+print(paste(m, ': p-value kruskal test ', K$p.value))
+pval <- K$p.value
+chisquared <- as.character(K$statistic)
+kruskallresult <- c(m,chisquared,pval)
+kruskallresult <- rbind(kruskallresult, c('','',''))
+
+colnames(kruskallresult) <- c("Alpha measurement","chi-squared","p-value") 
+
+write.csv(kruskallresult, paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                                "/Figure4/Figure4e/Statistics/","Fig4e_statistics_Kruskall",
+                                m,".csv", sep=""))
+
+#### p-adjustement? p.adjust(K$p.value, method = "BH")
+invisible({capture.output({
+D <- as.data.frame(dunn.test(table_alphadiversity_BabiesandFGFP[,
+                            colnames(table_alphadiversity_BabiesandFGFP) == m] ,
+                            as.factor(table_alphadiversity_BabiesandFGFP$AgeBin), 
+                            method='bh'))
+})})
+colnames(D) <- c('chi2','Z','P','P.adj','Comparison')
+
+# calculate effect size:
+e <- 'AgeBin'
+freq <- as.data.frame(table(unique(table_alphadiversity_BabiesandFGFP[,c('Sample.ID',e)])[,e]))
+for (c in D$Comparison){
+N1 <- freq$Freq[freq$Var1 == word(c,1)] #
+N2 <- freq$Freq[freq$Var1 == word(c,3)]
+D$N[D$Comparison == c]  <- sum(N1,N2)
+} #where N is the sum of the samples in the two groups compared
+D$r <-  D$Z/sqrt(D$N)
+D$r2 <- D$r^2
+
+write.csv(D, paste(Workdir,"Output_",format(Sys.time(), "%Y-%m-%d"),
+                   "/Figure4/Figure4e/Statistics/",
+                    "Fig4e_statistics_Dunn_BH_",m,".csv", sep=""))
+
+   }
+
+@
+\end{document}
