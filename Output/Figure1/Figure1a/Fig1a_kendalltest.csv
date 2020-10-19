@@ -1,0 +1,5 @@
+"","Kendall test, all infants","value"
+"1","Kendall's W (uncorrected for ties)",0.60625
+"2","Kendall's W (corrected for ties)",0.60625
+"3","Spearman's ranked correlation",0.55
+"4","Kendall's W p-value (one-tailed test [greater])",0.0004999500049995

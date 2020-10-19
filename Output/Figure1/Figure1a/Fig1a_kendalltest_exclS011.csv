@@ -1,0 +1,5 @@
+"","Kendall test, all infants not including S011","value"
+"1","Kendall's W (uncorrected for ties)",1
+"2","Kendall's W (corrected for ties)",1
+"3","Spearman's ranked correlation",1
+"4","Kendall's W p-value (one-tailed test [greater])",9.99900009999e-05
