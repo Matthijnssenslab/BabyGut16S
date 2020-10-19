@@ -9,5 +9,7 @@ Data files include:
 And a seperate folder containing the results from projecting the infant samples to adult samples from the FGFP dataset.
 ## Code
 The code is written in R, in a Markdown file that can be converted to pdf (or html) using knitr.
+Don't forget to change the working directory (*Workdir* variable) at line 22.
 ## Output
-All figures are saved in the output directory.
+All figures are saved in an automatically created output directory.
+An example of how it normally looks is shown.
